@@ -1,7 +1,7 @@
 /* Claude app visual snapshot, verified against claude.ai on 2026-09-11. */
 :root {
   --claude-clay: #d97757;
-  --claude-clay-strong: #c6613f;
+  --claude-clay-strong: #b45335;
   --claude-link: #184f95;
   --claude-link-hover: #123d75;
   --claude-code: #8e2626;
@@ -432,34 +432,6 @@ body {
   color: var(--claude-clay);
 }
 
-.book-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin: 20px 0 32px;
-}
-
-.book-grid a {
-  display: block;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-  padding: 14px 16px;
-  color: var(--vp-c-text-1);
-  background: var(--vp-c-bg-elv);
-  font-family: var(--claude-ui-font);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-  text-decoration: none;
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
-
-.book-grid a:hover {
-  border-color: var(--vp-c-border);
-  color: var(--vp-c-text-1);
-  background: var(--vp-c-bg-soft);
-}
-
 /* Reading surface */
 .VPDoc {
   padding-bottom: 96px;
@@ -829,7 +801,7 @@ body {
 }
 
 .VPDocAsideOutline .outline-link {
-  color: var(--vp-c-text-3);
+  color: var(--vp-c-text-2);
   font-size: 13px;
   line-height: 18px;
 }

@@ -4,10 +4,10 @@
 
 ## 本地开发
 
-安装 Node.js 与 npm 后，在仓库根目录执行：
+需要 Node.js 22.x（CI 使用的版本）和随 Node.js 提供的 npm。在仓库根目录执行 `npm ci`，按锁文件安装完全一致的依赖：
 
 ```bash
-npm install
+npm ci
 npm run docs:dev
 ```
 
