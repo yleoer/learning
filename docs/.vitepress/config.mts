@@ -17,6 +17,7 @@ const goGuideChapters = [
   { text: '第 1 章 设置你的 Go 环境', link: '/books/go-guide/chapter-01' },
   { text: '第 2 章 基础类型和变量声明', link: '/books/go-guide/chapter-02' },
   { text: '第 3 章 复合类型', link: '/books/go-guide/chapter-03' },
+  { text: '第 4 章 代码块、影子变量和控制结构', link: '/books/go-guide/chapter-04' },
 ]
 
 function tokenizeSearchText(text: string): string[] {
