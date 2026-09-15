@@ -11,7 +11,7 @@ description: Go 的预声明类型、零值、字面量、变量声明、常量�
 
 Go 的类型系统强调“明确表达意图”：没有隐式数值提升，也不会把任意数字或字符串当作布尔值。掌握零值、显式转换和常量的可表示性，比记住所有声明形式更重要。
 
-> 核对日期：2026 年 9 月 14 日；实验环境为 Go 1.27.1、Windows/AMD64。
+> 核对日期：2026 年 9 月 15 日；核对环境为 Go 1.27.1、Windows/AMD64。
 >
 > `strings.CutPrefix` 需要 Go 1.20 或更新版本。
 
@@ -176,7 +176,7 @@ var c int = 20.0  // 合法：该无类型常量的值是整数 20
 // var d int = 20.5 // 编译错误：常量有小数部分
 ```
 
-原文“浮点字面量不能赋给整型变量”的说法过于绝对。能否赋值取决于常量值是否可表示，而非字面量是否带小数点；已经有 `float64` 类型的变量则仍需显式转换。
+无类型常量能否赋给整型变量，取决于常量值能否由目标类型表示。带小数点的 `20.0` 仍表示整数 20；已经有 `float64` 类型的变量则需要显式转换。
 
 Go 不支持把数字、字符串或指针直接转换为 `bool`。应使用明确的比较，例如 `x != 0` 或 `s != ""`。
 
@@ -275,168 +275,44 @@ const (
 - 不用全大写下划线表示常量；首字母大小写还承担包外可见性的含义。
 - 避免相似 Unicode 码点、无意义下划线和把类型名重复塞进变量名。
 
-## 2.8 练习 {#ch2-exercises}
+## 练习 {#ch2-exercises}
 
-三题对应原书第 2 章练习。每题单独建立程序，先运行自己的实现，再展开参考答案。
+三题分别检查常量可表示性、运行时整数边界和浮点近似比较。先独立完成，再展开参考答案。除特别说明外，代码片段位于 `main` 函数内，`fmt` 对应标准库导入路径 `"fmt"`。
 
-### 练习 1：整数转浮点数
+### 练习 1：区分常量类型与显式转换
 
-声明一个值为 `20` 的 `int` 变量，将它转换为 `float64` 后打印两个变量。
-
-<details>
-<summary>查看参考答案</summary>
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	var i int = 20
-	var f float64 = float64(i)
-
-	fmt.Printf("i = %v (%T), f = %v (%T)\n", i, i, f, f)
-}
-```
-
-输出：
-
-```text
-i = 20 (int), f = 20 (float64)
-```
-
-Go 不会自动把 `int` 提升为 `float64`，因此必须显式写出 `float64(i)`。
-
-</details>
-
-### 练习 2：无类型常量
-
-声明一个无类型常量，使它既能赋给整数变量，也能赋给浮点变量，并打印两个结果。
-
-<details>
-<summary>查看参考答案</summary>
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	const value = 20
-
-	var i int = value
-	var f float64 = value
-
-	fmt.Printf("i = %v (%T), f = %v (%T)\n", i, i, f, f)
-}
-```
-
-输出：
-
-```text
-i = 20 (int), f = 20 (float64)
-```
-
-`value` 没有显式类型，只要值能由目标类型表示，就可以直接赋值。
-
-</details>
-
-### 练习 3：整数溢出
-
-声明 `byte`、`int32` 和 `uint64` 变量，分别初始化为各自类型的最大值，再加 `1`，观察运行时结果。思考：如果把这些值写成常量并在编译期加 `1`，结果有什么不同？
-
-<details>
-<summary>查看参考答案</summary>
-
-```go
-package main
-
-import (
-	"fmt"
-	"math"
-)
-
-func main() {
-	var b byte = math.MaxUint8
-	var smallI int32 = math.MaxInt32
-	var bigI uint64 = math.MaxUint64
-
-	b++
-	smallI++
-	bigI++
-
-	fmt.Println(b)
-	fmt.Println(smallI)
-	fmt.Println(bigI)
-}
-```
-
-输出：
-
-```text
-0
--2147483648
-0
-```
-
-`math.MaxUint8`、`math.MaxInt32` 和 `math.MaxUint64` 是带语义的无类型整数常量；赋值时分别落到 `byte`、`int32` 和 `uint64`。
-
-运行时整数运算可以溢出，结果仍按目标整数类型表示，不会自动 `panic`。无类型常量本身可以保存更大的精确整数，但把超出范围的常量赋给 `byte`、`int32` 或 `uint64` 时，编译器会报告溢出。例如 `var b byte = math.MaxUint8 + 1` 无法通过编译。
-
-</details>
-
-## 实验 {#ch2-experiments}
-
-### 实验 1：常量类型与可表示性
-
-验证目标：区分无类型常量与有类型常量的赋值规则，并确认不可表示的常量会在编译期被拒绝。
-
-保留下面三个常量，每次只选 A～H 中的一条声明放入 `main`，并用 `fmt.Printf("%T %v\n", 变量, 变量)` 打印结果。
+以下声明位于包级，每次只考虑 `a`～`f` 中的一条，并保留两个常量声明。判断它能否编译；对失败项给出保留数值的修改，并说明是常量可表示性问题还是有类型值的赋值问题。
 
 ```go
 const flexible = 255
-const fixed uint16 = 255
-const tooLarge = 256
+const typed uint16 = 255
 
-var a uint8 = flexible  // A
-var b uint16 = flexible // B
-var c uint8 = fixed     // C
-var d = uint8(fixed)    // D
-var e uint8 = tooLarge  // E
-var f = uint8(tooLarge) // F
-var g int = 20.0        // G
-var h int = 20.5        // H
+var a uint8 = flexible
+var b uint8 = typed
+var c = uint8(typed)
+var d uint8 = 256
+var e int = 20.0
+var f int = 20.5
 ```
 
-先预测并运行验证，再回答：
-
-1. 逐条预测 A～H 能否通过编译；失败项写明触发的是“常量可表示性”还是“有类型值的赋值兼容性”。
-2. 对能编译的语句，预测变量的静态类型和值。
-3. 解释 C 与 D 唯一改变的条件为什么可能改变编译结果。
-
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-| 语句 | 结果 | 静态类型和值 / 失败原因 |
-| --- | --- | --- |
-| A | 通过 | `a` 是 `uint8`，值为 `255` |
-| B | 通过 | `b` 是 `uint16`，值为 `255` |
-| C | 失败 | `fixed` 已是 `uint16`，不能直接赋给 `uint8`；这是有类型值的赋值兼容性问题 |
-| D | 通过 | `d` 是 `uint8`，值为 `255` |
-| E | 失败 | 无类型常量 `256` 不能由 `uint8` 表示 |
-| F | 失败 | 常量转换仍检查可表示性，`256` 会溢出 `uint8` |
-| G | 通过 | `g` 是 `int`，值为 `20`；常量没有小数部分 |
-| H | 失败 | `20.5` 无法由整数表示 |
+`a`、`c`、`e` 可以编译；`b`、`d`、`f` 不能编译。`flexible` 是无类型常量，值能由 `uint8` 表示，所以 `a` 合法；`typed` 已是 `uint16`，不能隐式赋给 `uint8`，需要写成 `uint8(typed)`。`d` 的 `256` 超出 `uint8` 范围，`f` 的 `20.5` 不能表示为整数。`e` 合法，因为无类型常量 `20.0` 的值是整数 20。
 
-`flexible` 是无类型常量。把它赋给具体类型时，只要值能由目标类型表示即可，所以 A、B 都成立。`fixed` 已经具有 `uint16` 类型；虽然它的值 `255` 能放进 `uint8`，C 也不会发生隐式数值转换。
+保留数值的修改可以是：
 
-D 明确写出了 `uint8(fixed)`。对常量进行这种显式转换时，编译器检查常量值是否可由目标类型表示；`255` 满足条件，所以转换成功。显式转换只解决了 C 的类型不兼容问题，不会绕过可表示性检查，这正是 F 仍然失败的原因。
+```go
+var b uint8 = uint8(typed)
+var d uint16 = 256
+var f float64 = 20.5
+```
 
 </details>
 
-### 实验 2：整数转换与运行时边界
+### 练习 2：解释定宽整数回绕并补充边界检查
 
-验证目标：观察运行时整数转换如何截断高位并按目标类型重新解释结果，确认转换本身不会因信息丢失而 `panic`。
+不运行程序，写出输出，并为“达到上界时保持原值”的场景补充加一前的边界检查。另行判断包级声明 `const u uint8 = 255 + 1` 和 `const s int8 = 127 + 1` 能否编译。
 
 ```go
 package main
@@ -444,310 +320,117 @@ package main
 import "fmt"
 
 func main() {
-	inRange := 255
-	tooWide := 260
-	negative := -1
-	fmt.Printf("A %T %d\n", uint8(inRange), uint8(inRange))
-	fmt.Printf("B %T %d\n", uint8(tooWide), uint8(tooWide))
-	fmt.Printf("C %T %d\n", uint8(negative), uint8(negative))
+	u := uint8(255)
+	s := int8(127)
+	u++
+	s++
+	fmt.Println(u, s)
 }
 ```
 
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`，并逐行写出 A、B、C 的类型和值。
-2. 说明 `255 -> uint8`、`260 -> uint8`、`-1 -> uint8` 各自保留或丢弃了哪些整数表示信息。
-
 <details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A uint8 255
-B uint8 4
-C uint8 255
-```
-
-三个源操作数都是 `int` 变量，因此这里发生的是运行时整数值转换，而不是常量转换：
-
-- `255` 的二进制值能由 8 位无符号整数完整表示，信息没有丢失。
-- `260` 对 `2^8` 取模后为 `4`，高于最低 8 位的信息被丢弃。
-- `-1` 转为 8 位无符号整数后得到与它模 `2^8` 同余的 `255`；目标类型不再保留“负数”这一符号解释。
-
-转换为宽度为 `n` 的整数类型时，结果保留足以形成目标位宽的低位，再按目标类型的有符号或无符号规则解释。整数转换本身不会因为截断或符号改变而 `panic`。
-
-</details>
-
-### 实验 3：整数除零的错误阶段
-
-验证目标：对比常量除零与变量除零，确认错误分别发生在编译期和运行期。
-
-以下三个场景视为三个互不影响的独立程序：
-
-```go
-// nonzero.go 的 main
-divisor := 3
-fmt.Println(12 / divisor)
-
-// const_zero.go 的 main
-const divisor = 0
-fmt.Println(12 / divisor)
-
-// runtime_zero.go 的 main
-divisor := 3
-fmt.Println(12 / divisor)
-divisor = 0
-fmt.Println(12 / divisor)
-```
-
-先预测并运行验证，再回答：
-
-1. 分别预测三个场景能否编译、能执行到哪一行，以及失败发生在编译期还是运行期。
-2. 对 `nonzero.go` 和 `runtime_zero.go`，逐行预测实际打印值或失败位置。
-3. 对两个零除数场景，明确预测证据来自编译器诊断还是运行时 `panic`，并解释判断依据。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-| 场景 | 编译 | 执行结果 | 失败阶段 |
-| --- | --- | --- | --- |
-| `nonzero.go` | 通过 | 打印 `4` | 不失败 |
-| `const_zero.go` | 失败 | 不会开始执行 | 编译期 |
-| `runtime_zero.go` | 通过 | 先打印 `4`，随后在第二个 `Println` 的除法求值处 `panic` | 运行期 |
-
-`const_zero.go` 中的除数是值为零的常量，表达式 `12 / divisor` 是非法常量运算，编译器会直接报告除零错误。
-
-`runtime_zero.go` 中的 `divisor` 是变量。编译器允许除法表达式，执行时才读取它的当前值。第一次读取到 `3`，所以打印 `4`；赋值为 `0` 后，第二次整数除法触发 `panic: runtime error: integer divide by zero`。参数必须先求值，因而第二个 `fmt.Println` 本身没有机会打印结果。
-
-</details>
-
-### 实验 4：定宽整数运算溢出
-
-验证目标：观察有符号和无符号定宽整数越过边界后的结果，并与编译期常量溢出区分开。
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	normalSigned := int8(126)
-	normalSigned++
-	fmt.Printf("A %T %d\n", normalSigned, normalSigned)
-
-	maxSigned := int8(127)
-	maxSigned++
-	fmt.Printf("B %T %d\n", maxSigned, maxSigned)
-
-	normalUnsigned := uint8(1)
-	normalUnsigned--
-	fmt.Printf("C %T %d\n", normalUnsigned, normalUnsigned)
-
-	minUnsigned := uint8(0)
-	minUnsigned--
-	fmt.Printf("D %T %d\n", minUnsigned, minUnsigned)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`，并逐行写出 A～D 的类型和值。
-2. 对比 A/B，只解释初值从 `126` 变为 `127` 后的差异；对比 C/D，只解释初值从 `1` 变为 `0` 后的差异。
-3. 说明这些变量运算与“常量表达式直接写出越界结果”为什么不能共用同一份证据。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A int8 127
-B int8 -128
-C uint8 0
-D uint8 255
-```
-
-A 的加法结果仍在 `int8` 范围内。B 从 `int8` 最大值继续加一，按 8 位整数表示回绕为 `-128`。C 的减法结果仍在 `uint8` 范围内；D 从无符号最小值减一，按模 `2^8` 运算得到 `255`。
-
-这里的 `++`、`--` 操作数都是变量，属于运行时整数运算。Go 允许整数变量运算溢出，并按该整数类型产生确定的表示结果，不会自动 `panic`。常量表达式在编译期保持精确值；若最终值不能由所需类型表示，例如 `var x int8 = 127 + 1`，编译器会拒绝程序。因此两类代码验证的是不同阶段的规则。
-
-</details>
-
-### 实验 5：短变量声明与作用域
-
-验证目标：对比同一代码块中的重新赋值与内层代码块中的变量隐藏，并确认 `:=` 必须引入新变量。
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	x := 10
-	x, y := 20, "go"
-	fmt.Println("A", x, y)
-	{
-		x := 30
-		fmt.Println("B", x)
-	}
-	fmt.Println("C", x)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 原程序能否编译？A、B、C 分别输出什么？
-2. 单独把内层的 `x := 30` 改为 `x = 30`，哪些输出变化？
-3. 恢复原程序，再单独把 `x, y := 20, "go"` 改为 `x := 20`，同时把 A 行改为只打印 `x`。编译器会如何处理第二次声明？
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A 20 go
-B 30
-C 20
-```
-
-`x, y := ...` 中的 `y` 是同一代码块内的新变量，`x` 被重新赋值。内层 `x := 30` 创建另一个变量，因此不会改变外层 `x`；把它改为 `x = 30` 后，修改的是外层变量，C 变为 `C 30`。
-
-第三种改动在同一代码块内重复写 `x := 20`，左侧没有新变量，编译失败并报告 `no new variables on left side of :=`。该语句应改为 `x = 20`。
-
-</details>
-
-### 实验 6：浮点常量与运行时计算
-
-验证目标：检查相同十进制表达式在常量和变量运算中的结果，观察浮点除零行为，并练习如何按允许的误差判断两个浮点数是否近似相等。
-
-```go
-package main
-
-import (
-	"fmt"
-	"math"
-)
-
-func main() {
-	const constantSum = 0.1 + 0.2
-	x, y := 0.1, 0.2
-	runtimeSum := x + y
-	fmt.Printf("A %.17g %t\n", constantSum, constantSum == 0.3)
-	fmt.Printf("B %.17g %t\n", runtimeSum, runtimeSum == 0.3)
-	zero := 0.0
-	fmt.Println("C", math.IsInf(1.0/zero, 1), math.IsNaN(zero/zero))
-}
-```
-
-先预测并运行验证，再回答：
-
-1. A、B 的相等性比较是否一致？数值以 17 位有效数字输出后有什么差异？
-2. C 中两次浮点除法的结果分别属于哪一类特殊值？
-3. 另建一个程序，将 `zero := 0.0` 改为 `const zero = 0.0`。这时失败发生在哪个阶段？
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-本章验证环境的输出为：
-
-```text
-A 0.29999999999999999 true
-B 0.30000000000000004 false
-C true true
-```
-
-A 的比较在常量语义下进行，`0.1 + 0.2` 与 `0.3` 相等；传给 `Printf` 时，常量才转换为默认的 `float64`，显示出二进制浮点近似。B 的两个变量已经分别舍入为 `float64`，相加后与转换为 `float64` 的 `0.3` 不相等。
-
-C 在本机官方工具链上得到正无穷和 `NaN`，并由 `math` 函数识别。这是已验证环境的结果，浮点除零的实现边界见 [2.3 节](#ch2-3)。把零改成常量后，两处除法都在编译期被拒绝，不会开始运行。
-
-**先区分精确相等与近似相等。** Go 的 `==` 比较两个浮点值是否精确相等，适用于确实需要精确比较的场景；它不会自动容忍舍入误差。要判断计算结果是否足够接近，需要根据业务要求设定误差范围。
-
-在原程序的 `main` 中追加以下语句，可以先尝试绝对误差判断：
-
-```go
-diff := math.Abs(runtimeSum - 0.3)
-fmt.Printf("diff = %.17g\n", diff)
-fmt.Println(diff <= 1e-12, diff <= 1e-18)
-```
+<summary>查看参考答案</summary>
 
 输出为：
 
 ```text
-diff = 5.5511151231257827e-17
-true false
+0 -128
 ```
 
-绝对误差使用与原数值相同的单位，适合接近零的值；相对误差则将差值除以两个数中较大的绝对值，适合比较不同数量级的值。本例采用“满足任一误差条件即可”的规则：
+变量 `u` 和 `s` 执行 `++` 时分别回绕为 0 和 -128，不会自动 `panic`。两条常量声明的结果则在编译期就超出目标类型范围，无法编译。直接写 `uint8(255) + 1` 也是有类型常量运算，会被编译器拒绝，不能用它代表变量加一。
 
-```text
-|a - b| <= absTol
-或
-|a - b| / max(|a|, |b|) <= relTol
-```
-
-下面是一份可独立运行的实现。辅助函数和条件判断会在后续章节展开，这里先关注检查顺序与返回条件：
+将两条 `++` 替换为以下代码即可在达到上界时保留原值，输出变为 `255 127`。这些常量需要导入标准库 `math`：
 
 ```go
-package main
-
-import (
-	"fmt"
-	"math"
-)
-
-// 调用方应保证阈值有限，absTol >= 0，且 0 <= relTol < 1。
-func nearlyEqual(a, b, absTol, relTol float64) bool {
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	if a == b {
-		return true
-	}
-	if math.IsInf(a, 0) || math.IsInf(b, 0) {
-		return false
-	}
-
-	diff := math.Abs(a - b)
-	scale := math.Max(math.Abs(a), math.Abs(b))
-	return diff <= absTol || diff/scale <= relTol
+if u < math.MaxUint8 {
+	u++
 }
-
-func main() {
-	const absTol = 1e-12
-	const relTol = 1e-9
-	x, y := 0.1, 0.2
-
-	fmt.Println("sum", nearlyEqual(x+y, 0.3, absTol, relTol))
-	fmt.Println("near zero", nearlyEqual(0, 1e-13, absTol, relTol))
-	fmt.Println("large", nearlyEqual(1e12, 1e12+0.5, absTol, relTol))
-	fmt.Println("different", nearlyEqual(1, 1.01, absTol, relTol))
-	fmt.Println("NaN", nearlyEqual(math.NaN(), math.NaN(), absTol, relTol))
-	fmt.Println("same infinity", nearlyEqual(math.Inf(1), math.Inf(1), absTol, relTol))
-	fmt.Println("opposite infinities", nearlyEqual(math.Inf(1), math.Inf(-1), absTol, relTol))
-	fmt.Println("finite vs infinity", nearlyEqual(1, math.Inf(1), absTol, relTol))
+if s < math.MaxInt8 {
+	s++
 }
 ```
 
-输出为：
+</details>
 
-```text
-sum true
-near zero true
-large true
-different false
-NaN false
-same infinity true
-opposite infinities false
-finite vs infinity false
+### 练习 3：判断浮点数是否近似相等
+
+解释下面两个比较为什么不同，并把最后一行改成允许绝对误差 `1e-9` 的近似比较。
+
+```go
+const exact = 0.1 + 0.2
+x, y := 0.1, 0.2
+fmt.Println(exact == 0.3)
+fmt.Println(x+y == 0.3)
 ```
 
-`0` 与 `1e-13` 的相对误差是 `1`，但绝对误差足够小；`1e12` 与 `1e12 + 0.5` 的绝对误差是 `0.5`，但相对误差约为 `5e-13`。前者需要绝对误差条件，后者需要相对误差条件。`1` 与 `1.01` 则不满足本例的任一阈值。
+<details>
+<summary>查看参考答案</summary>
 
-先判断 `NaN`，再用 `a == b` 处理完全相等的有限值、正负零和同号无穷；之后排除其余无穷情况，避免直接计算无穷之间的差。到达误差计算时，两个值有限且不相等，`scale` 必定大于零。如果相反符号的极大有限值相减溢出为无穷，两项误差检查也都会返回 `false`，符合本例阈值约束。
+常量比较 `exact == 0.3` 为 `true`；`x` 和 `y` 已分别舍入为 `float64`，相加后的结果与 `0.3` 转为 `float64` 的值不同，第二行是 `false`。近似比较可以写为：
 
-`nearlyEqual` 是本例自定义函数。`1e-12` 和 `1e-9` 只是演示参数，应按数据单位、数量级和可接受的误差选择；阈值越大，越容易把不同的结果判为接近。近似相等不会消除数值误差，也不能替代金额计算所需的精确十进制表示。
+```go
+const epsilon = 1e-9
+fmt.Println(math.Abs((x+y)-0.3) <= epsilon)
+```
+
+这段代码需要导入标准库 `math`。误差阈值应根据数值范围和业务要求选择，不能把 `==` 当作通用的近似判断。
+
+</details>
+
+## 面试题 {#ch2-interview}
+
+三题直接检查零值、短路求值和短变量声明。先独立回答，再展开参考答案；代码上下文与导入约定沿用[练习部分](#ch2-exercises)。
+
+### 面试题 1：未显式初始化的变量能直接读取吗？
+
+下面代码能否编译，若能，输出什么？`count == nil` 能否代替 `count == 0` 判断初始值？
+
+```go
+var count int
+var ready bool
+var name string
+fmt.Printf("%d %t %q\n", count, ready, name)
+```
+
+<details>
+<summary>查看参考答案</summary>
+
+可以编译，输出 `0 false ""`。没有显式初始值的变量会得到所属类型的零值，并非未定义的内容；字符串零值是空字符串。`count == nil` 不能编译，因为 `int` 不能与 `nil` 比较，`nil` 不是所有类型通用的零值。可回看[各类型的零值](#ch2-1)。
+
+</details>
+
+### 面试题 2：短路求值能避免除零吗？
+
+下面两行分别输出什么？若各自交换 `&&` 或 `||` 两侧的表达式，是否仍然安全？交换后的两个场景分别考虑。
+
+```go
+divisor := 0
+fmt.Println(divisor != 0 && 12/divisor > 1)
+fmt.Println(divisor == 0 || 12/divisor > 1)
+```
+
+<details>
+<summary>查看参考答案</summary>
+
+依次输出 `false`、`true`，两次都不执行除法。`&&` 在左侧为假时跳过右侧，`||` 在左侧为真时跳过右侧。交换后都先求值 `12/divisor`，触发运行时整数除零 `panic`；保护条件必须先求值。
+
+</details>
+
+### 面试题 3：`:=` 左侧出现 `_` 就算有新变量吗？
+
+下面代码能否编译？第三条声明与第二条声明有什么区别，应该怎样修改？所有声明都在同一个代码块内。
+
+```go
+x := 1
+x, y := 2, 3
+x, _ := 4, 5
+fmt.Println(x, y)
+```
+
+<details>
+<summary>查看参考答案</summary>
+
+不能编译。第二条声明引入了新变量 `y`，并给已有的 `x` 赋值；第三条声明没有新的非空白变量，`_` 不计入新变量。改为 `x, _ = 4, 5` 后输出 `4 3`。
 
 </details>
 
@@ -757,5 +440,7 @@ finite vs infinity false
 - [Go 语言规范：常量](https://go.dev/ref/spec#Constants)
 - [Go 语言规范：变量声明](https://go.dev/ref/spec#Variable_declarations)
 - [Go 语言规范：转换](https://go.dev/ref/spec#Conversions)
+- [Go 语言规范：逻辑运算与短路求值](https://go.dev/ref/spec#Logical_operators)
+- [Go 语言规范：短变量声明](https://go.dev/ref/spec#Short_variable_declarations)
 - [Go 标准库 `strings.CutPrefix`：移除字符串前缀并报告是否匹配](https://pkg.go.dev/strings#CutPrefix)
 - [Effective Go：命名](https://go.dev/doc/effective_go#names)

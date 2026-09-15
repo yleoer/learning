@@ -9,7 +9,7 @@ description: 安装 Go、创建第一个模块，并用格式化、静态检查�
 
 本章沿用原书“安装工具 → 创建模块 → 编写程序 → 检查与构建”的主线。完成后，你应能独立运行一个 Go 程序，区分格式化、静态检查和编译的职责，并把这些步骤写成可重复执行的流程。
 
-> 核对日期：2026 年 9 月 14 日；实验环境为 Go 1.27.1、Windows/AMD64。
+> 核对日期：2026 年 9 月 15 日；核对环境为 Go 1.27.1、Windows/AMD64。
 
 下面标为 `sh` 的命令使用 Unix shell 语法，`$` 是提示符，无需输入；Windows PowerShell 的差异会单独说明。
 
@@ -300,146 +300,108 @@ Go 通常每年发布两个主要版本，并为当前两个主要版本按需�
 
 已部署的 Go 二进制不会因为开发机更换工具链而自动改变；需要获得新工具链或标准库中的修复时，必须重新构建并部署。需要并行测试旧版本时，可参考官方的[多版本安装方法](https://go.dev/doc/manage-install)。
 
-## 1.7 练习 {#ch1-exercises}
+## 练习 {#ch1-exercises}
 
-以下三题保留原书练习的目标，参考答案由本指南整理。先独立完成，再展开核对。
+两题分别检查工具链任务设计和静态检查的能力边界。先独立完成，再展开参考答案。Go 代码片段位于 `main` 函数内，`fmt` 对应标准库导入路径 `"fmt"`；同题的独立场景分别分析，命令均以模块根目录为当前目录。
 
-### 练习 1：分享最小示例
+### 练习 1：为 Hello 项目固化工具链
 
-在 The Go Playground 中运行本章的 Hello World，格式化代码并生成分享链接。向同伴解释：为什么它适合演示，而不适合保存敏感信息或充当项目仓库？
-
-<details>
-<summary>查看参考思路</summary>
-
-把本章完整的 `hello.go` 粘贴到 Playground，运行后应看到 `Hello, world!`，再使用 Format 和 Share。分享链接对应保存的示例，修改后需要重新分享；它便于复现小问题，但不能代替版本控制、项目依赖管理和本地运行环境。代码会提交给在线服务，分享内容可被持有链接的人访问，因此只使用适合公开的示例。
-
-</details>
-
-### 练习 2：增加清理目标
-
-给 [1.4 节](#ch1-4)的 Makefile 增加 `clean` 目标，删除本章产生的默认可执行文件和 `bin/` 中显式指定的产物。先用 `go help clean` 和 `go clean -n ./...` 查看清理范围，说明普通清理与清空构建缓存的区别。
+为一个只有 `hello.go` 的模块设计 Makefile，提供 `fmt`、`vet`、`build` 和 `clean` 四个目标。`build` 应将程序写入 `bin/hello`，并说明 `clean` 为什么需要同时处理 Go 生成的默认产物和显式输出文件。答案不要求实际执行命令。
 
 <details>
 <summary>查看参考答案</summary>
 
 ```make
-.PHONY: clean
+.PHONY: fmt vet build clean
+
+fmt:
+	go fmt ./...
+
+vet: fmt
+	go vet ./...
+
+build: vet
+	go build -o bin/hello .
 
 clean:
 	go clean ./...
 	rm -f bin/hello bin/hello.exe
 ```
 
-`go clean ./...` 会删除 `go build` 为这些包生成的默认命名产物，包括本章的 `hello` 或 `hello.exe`，但不会默认清空构建缓存，也不会删除用 `-o` 指定的 `bin/hello` 或 `bin/hello.exe`，所以这里只需显式删除后两者。清空构建缓存需要 `go clean -cache`，普通清理无需这样做。
+`go fmt` 统一源码格式，`go vet` 检查一部分可疑用法，`go build -o` 生成指定路径的产物，并自动创建缺失的 `bin` 目录。`go clean ./...` 不会删除 `-o` 指定的产物，所以清理目标要显式删除它。
 
-上面的 `rm` 使用 Unix shell 语法。原生 PowerShell 可在模块根目录执行：
+上面的清理配方使用 Unix shell 的 `rm`。在 Windows 上将输出路径改为 `bin/hello.exe`；使用原生 PowerShell 时，构建与清理命令为：
 
 ```powershell
+go build -o bin/hello.exe .
 go clean ./...
-Remove-Item -LiteralPath '.\bin\hello', '.\bin\hello.exe' -ErrorAction SilentlyContinue
+foreach ($buildOutput in '.\bin\hello', '.\bin\hello.exe') {
+	if (Test-Path -LiteralPath $buildOutput) {
+		Remove-Item -LiteralPath $buildOutput
+	}
+}
 ```
 
 </details>
 
-### 练习 3：探索格式与语法边界
+### 练习 2：判断工具能发现哪类错误
 
-修改 `hello.go` 的空格、空行和缩进，再运行 `go fmt` 比较结果。随后把 `func main()` 的左花括号移到下一行，分别运行 `go fmt` 和 `go build`，解释为什么格式化器不能修复它。
+对下面三个场景分别判断 `go build`、`go vet` 和运行程序的结果，并说明还需要哪一种检查才能发现问题。
+
+```go
+// A
+fmt.Printf("Hello, %s!\n", "world")
+
+// B
+fmt.Printf("Hello, %s!\n")
+
+// C：需求是向 world 问好
+fmt.Printf("Hello, %s!\n", "wrong name")
+```
 
 <details>
 <summary>查看参考答案</summary>
 
-空格、缩进和部分空行会被 `go fmt` 规范化，只要程序仍然符合语法。左花括号另起一行时，编译器会在上一行末尾的 `)` 后自动插入分号，函数声明因而不完整；格式化器面对的是语法错误，而不是单纯的风格差异。
+| 场景 | `go build` | `go vet` | 运行结果 | 还需检查 |
+| --- | --- | --- | --- | --- |
+| A | 通过 | 通过 | `Hello, world!` | 无 |
+| B | 通过 | 报告格式参数可疑 | `Hello, %!s(MISSING)!` | 修复代码 |
+| C | 通过 | 通过 | `Hello, wrong name!` | 对照需求、测试或代码审查 |
+
+编译器主要检查语法和类型；`go vet` 能发现部分格式化调用问题，但不能从代码本身推断业务需求。构建成功不等于行为满足需求。
 
 </details>
 
-## 实验 {#ch1-experiments}
+## 面试题 {#ch1-interview}
 
-准备一个独立的 `hello` 目录，运行 `go mod init example.com/hello`，保存本章的 `hello.go`。每个实验开始前恢复这份正常程序，并移走上一实验添加的文件。记录 `go version`；先预测结果，再执行命令。以下 Go 命令适用于 PowerShell 和 Unix shell，可执行文件的启动方式分别列出。
+三题检查源码选择、格式化边界和构建产物更新。先独立回答，再展开参考答案；命令的目录约定沿用[练习部分](#ch1-exercises)。
 
-### 实验 1：运行源码与运行构建产物
+### 面试题 1：按包运行和按文件运行有什么区别？
 
-验证目标：对比 `go run` 与 `go build` 的产物和执行方式，并确认源码修改何时进入实际运行的程序。
-
-1. 确认目录内没有先前的可执行文件，运行 `go run .`，记录输出和目录变化。
-2. 运行 `go build -o hello-demo .`（Windows 使用 `hello-demo.exe`），再运行 `./hello-demo` 或 `.\hello-demo.exe`。
-3. 将源码中的问候语改为 `Hello, Go!`，先运行现有可执行文件，再执行 `go run .`。
-4. 重新构建后运行可执行文件。哪些操作会让源码修改进入运行中的程序？
+目录中有 `hello.go` 和 `message.go`，两者属于同一个 `main` 包；`hello.go` 调用了 `message()`。`go run .` 与 `go run hello.go` 分别会发生什么？
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-第一次 `go run .` 输出 `Hello, world!`，当前目录不会留下可分发的程序。`go build -o ...` 生成指定产物，但不自动执行；运行它同样输出 `Hello, world!`。
-
-修改源码后，现有产物仍输出 `Hello, world!`；`go run .` 重新构建当前源码，输出 `Hello, Go!`。只有重新执行 `go build`，保存的产物才会更新。`go run` 可能使用临时目录和构建缓存，“当前目录没有产物”并不表示没有发生编译。
+`go run .` 按当前包选择源文件，因此可以找到 `message()`；`go run hello.go` 只编译命令行列出的文件，会因找不到 `message` 在编译期失败。
 
 </details>
 
-### 实验 2：按包运行与按文件运行
-
-验证目标：比较按包与按文件运行时的源码选择范围，并确认缺少同包文件会在编译期失败。
-
-把 `hello.go` 改为以下内容，并在同一目录新增 `message.go`：
-
-```go
-// hello.go
-package main
-
-import "fmt"
-
-func main() {
-	fmt.Println(message())
-}
-```
-
-```go
-// message.go
-package main
-
-func message() string {
-	return "Hello from another file!"
-}
-```
-
-分别执行 `go run .`、`go run hello.go` 和 `go run hello.go message.go`。预测哪些命令成功，失败发生在编译期还是运行期，并解释每条命令选择了哪些文件。
+### 面试题 2：为什么 `gofmt` 不能修复另起一行的函数左花括号？
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-`go run .` 和 `go run hello.go message.go` 都输出 `Hello from another file!`。前者按包收集文件，后者显式列出了两个文件。
-
-`go run hello.go` 编译失败，报告 `undefined: message`。它只编译列出的文件，即使 `message.go` 就在同一目录，也不会自动加入。失败发生在启动程序之前。
+Go 的分号插入规则会在上一行结尾形成分号，函数声明因此不符合语法。`gofmt` 只能格式化已经能解析的语法树，遇到语法错误无法代替编译器修复代码。
 
 </details>
 
-### 实验 3：编译通过是否意味着程序正确
-
-验证目标：区分编译器、`go vet` 与需求核对能够发现的问题边界。
-
-恢复只含 `hello.go` 的项目。每次仅替换 `main` 中的输出语句，分别验证以下三个场景：
-
-```go
-// 场景 A
-fmt.Printf("Hello, %s!\n", "world")
-
-// 场景 B
-fmt.Printf("Hello, %s!\n")
-
-// 场景 C：需求是向 world 问好
-fmt.Printf("Hello, %s!\n", "wrong name")
-```
-
-对每个场景执行 `go build .`、`go vet ./...` 和 `go run .`，记录退出状态与输出。哪类问题能被编译器发现，哪类能被 `vet` 发现，哪类仍需对照需求检查？
+### 面试题 3：源码修改后，已部署的 Go 二进制会自动更新吗？
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-| 场景 | `go build` | `go vet` | `go run` 的输出 |
-| --- | --- | --- | --- |
-| A | 通过 | 通过 | `Hello, world!` |
-| B | 通过 | 报告缺少 `%s` 参数 | `Hello, %!s(MISSING)!` |
-| C | 通过 | 通过 | `Hello, wrong name!` |
-
-三种写法都满足语法和类型要求，因此都能编译。B 的格式字符串与参数数量不匹配，属于 `vet` 可以发现的可疑调用；C 的错误在于不符合需求，静态检查无法从这段代码推断正确的问候对象。还需要测试、代码审查和实际结果核对。
+不会。二进制包含构建时的源码和依赖；源码、工具链或标准库变化都需要重新构建并重新部署，旧进程和旧文件不会自动改变。
 
 </details>
 

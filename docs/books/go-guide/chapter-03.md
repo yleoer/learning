@@ -9,7 +9,7 @@ description: Go 的数组、切片、字符串、映射和结构体，以及它�
 
 本章沿用原书的顺序，依次学习数组、切片、字符串、映射和结构体。重点是区分值的复制与底层数据的共享，理解长度、容量、零值和可比较性如何影响实际操作。
 
-> 核对日期：2026 年 9 月 14 日；实验环境为 Go 1.27.1、Windows/AMD64。
+> 核对日期：2026 年 9 月 15 日；核对环境为 Go 1.27.1、Windows/AMD64。
 >
 > `clear`、标准库 `slices` 和 `maps` 需要 Go 1.21 或更新版本；切片转数组值从 Go 1.20 起支持，转数组指针从 Go 1.17 起支持。
 
@@ -302,780 +302,260 @@ payload := struct {
 
 结构体是否可比较取决于所有字段：只含可比较字段的结构体可以使用 `==` 和 `!=`；含切片、映射或函数字段的结构体不可比较。
 
-原文把通道字段也列为不可比较，这是不准确的：通道类型可比较，含通道字段不会单独导致结构体不可比较。指针字段也可比较；这些比较检查的是引用身份，而非引用对象的内容。接口字段另有动态值的限制，将在后续章节讨论。
+通道和指针类型都可比较，含有这些字段不会单独导致结构体不可比较；比较检查的是通道或指针的身份，而非所引用对象的内容。接口字段另有动态值的限制，将在后续章节讨论。
 
 两个不同的定义类型不能仅因字段相同就直接比较，需先转换到兼容类型。普通结构体之间若忽略标签后的底层类型相同，可以显式转换；字段的顺序、名称、类型及是否嵌入仍需一致。标签参与普通类型身份与赋值判断，却在这种显式转换中被忽略；不同包中的未导出字段也不会仅因拼写相同就被当成同一字段。
 
 具名结构体与底层类型相同的匿名结构体之间可以直接赋值；字段全部可比较时，也可以直接比较。赋值只复制结构体值，不会递归复制切片、映射等字段所引用的数据。
 
-## 3.6 练习 {#ch3-exercises}
+## 练习 {#ch3-exercises}
 
-三题对应原书第 3 章练习。
+五题分别检查数组、切片、字符串、映射和结构体的关键行为。先独立完成，再展开参考答案。除完整程序外，代码片段位于 `main` 函数内，`fmt` 对应标准库导入路径 `"fmt"`；其他包在首次使用处说明。
 
-### 练习 1：派生切片
+### 练习 1：数组的赋值、传参与长度
 
-创建字符串切片 `greetings`，包含 `"Hello"`、`"Hola"`、`"नमस्कार"`、`"こんにちは"` 和 `"Привіт"`。分别派生包含前两个值、第 2～4 个值、第 4～5 个值的三个子切片，打印全部四个切片及各自长度。再修改第二个子切片的首元素，观察共享关系。
-
-<details>
-<summary>查看参考答案</summary>
+写出输出，说明数组赋值与传参分别复制了什么。若只把 `b := a` 改为 `b := [...]int{1, 2}`，`change(b)` 和 `a == b` 还能编译吗？
 
 ```go
 package main
 
 import "fmt"
 
+func change(a [3]int) {
+	a[0] = 9
+}
+
 func main() {
-	greetings := []string{
-		"Hello",
-		"Hola",
-		"नमस्कार",
-		"こんにちは",
-		"Привіт",
-	}
-
-	first := greetings[:2]
-	middle := greetings[1:4]
-	last := greetings[3:]
-
-	fmt.Println(greetings, len(greetings))
-	fmt.Println(first, len(first))
-	fmt.Println(middle, len(middle))
-	fmt.Println(last, len(last))
-
-	middle[0] = "¡Hola!"
-	fmt.Println(greetings[1]) // ¡Hola!
+	a := [3]int{1, 2}
+	b := a
+	change(b)
+	b[1] = 8
+	fmt.Println(a, b, a == b)
 }
 ```
 
-四个切片的长度依次为 `5`、`2`、`3`、`2`，最后一行输出 `¡Hola!`。派生操作没有复制元素，`middle[0]` 与 `greetings[1]` 对应同一个底层数组位置，因此修改也能从 `first[1]` 观察到。
+<details>
+<summary>查看参考答案</summary>
+
+输出为 `[1 2 0] [1 8 0] false`。字面量中未指定的第三个元素取零值；`b := a` 复制三个整数，调用 `change(b)` 时又复制一次，所以函数内的修改不影响 `b`，对 `b[1]` 的修改也不影响 `a`。
+
+改用 `[...]int{1, 2}` 后，`b` 的类型为 `[2]int`，与 `[3]int` 不同，调用和比较都无法编译。数组长度属于类型，元素相同或前缀相同不能消除这个区别。可回看[数组的类型与值语义](#ch3-1)。
 
 </details>
 
-### 练习 2：字节与代码点
+### 练习 2：限制追加范围与复制已有元素
 
-声明 `message := "Hi 🌞 and 🌍"`，按 Unicode 代码点计数，将第 4 个代码点作为字符打印出来。再用字符串索引、`[]byte` 和 `[]rune` 比较该位置的表示，解释字节位置与代码点位置的区别。
+写出 `view` 在追加前的长度和容量，以及最后一行的输出。再只把 `clone` 的创建方式改为 `make([]int, 2)`，判断输出如何变化，解释哪些操作共享存储、哪些操作复制元素。
+
+```go
+src := []int{1, 2, 3, 4}
+view := src[1:3:3]
+clone := make([]int, 0, 2)
+n := copy(clone, view)
+view[0] = 9
+view = append(view, 5)
+view[0] = 8
+fmt.Println(src, view, clone, n)
+```
 
 <details>
 <summary>查看参考答案</summary>
 
-```go
-package main
-
-import "fmt"
-
-func main() {
-	message := "Hi 🌞 and 🌍"
-	bytes := []byte(message)
-	runes := []rune(message)
-
-	fmt.Println(len(message))
-	fmt.Println(len(runes))
-	fmt.Println(message[3])
-	fmt.Printf("% x\n", bytes[3:7])
-	fmt.Printf("%c\n", runes[3])
-}
-```
-
-输出：
+追加前 `view` 的长度和容量均为 `2`。原程序输出：
 
 ```text
-16
-10
-240
-f0 9f 8c 9e
+[1 9 3 4] [8 3 5] [] 0
+```
+
+三索引切片只限制容量，不复制元素，因此 `view[0] = 9` 会修改 `src[1]`。追加后长度将超过受限容量，必须分配新数组；随后的 `view[0] = 8` 才不再影响 `src`。不能据此推断新容量的具体数值。
+
+`copy` 复制数量为两个切片长度的较小值，目标虽有容量 `2`，长度却为 `0`，所以第一次复制数量为 `0`。改成 `make([]int, 2)` 后，先复制出 `[2 3]`，输出变为：
+
+```text
+[1 9 3 4] [8 3 5] [2 3] 2
+```
+
+独立存储来自 `make`，`copy` 负责填充已有元素，不会自动扩展目标长度。可回看[三索引切片](#ch3-2)中的容量规则与 `copy` 的长度要求。
+
+</details>
+
+### 练习 3：按字节和代码点处理字符串
+
+写出三行输出，分别说明计数与索引使用的单位，以及 `message[3]` 为什么不是完整字符。`utf8` 对应标准库导入路径 `"unicode/utf8"`。
+
+```go
+message := "Hi 🌞"
+fmt.Println(len(message), utf8.RuneCountInString(message))
+fmt.Println(string([]rune(message)[3]))
+fmt.Println(message[3])
+```
+
+<details>
+<summary>查看参考答案</summary>
+
+需要导入 `fmt` 和 `unicode/utf8`。输出为：
+
+```text
+7 4
 🌞
+240
 ```
 
-`len(message)` 和 `message[i]` 都按字节工作。`🌞` 的 UTF-8 编码占 4 字节，而 `[]rune` 按 Unicode 代码点拆分字符串，因此 `runes[3]` 才是完整字符。
+`len` 统计 UTF-8 字节数，太阳符号占 4 个字节；`utf8.RuneCountInString` 按 Unicode 代码点计数。字符串索引返回单个字节，`message[3]` 是太阳符号编码的首字节 `0xf0`，不能单独表示完整字符；用 `[]rune` 后按代码点索引才能得到 `🌞`。
 
 </details>
 
-### 练习 3：初始化结构体
+### 练习 4：区分零值条目、缺失键与 nil 映射
 
-定义 `Employee` 结构体（`firstName`、`lastName`、`id`），分别用无字段名字面量、有字段名字面量和 `var` 创建三个实例，再用点号为第三个实例赋值并打印。
+写出输出，并解释两次读取的区别。另行将第一行改为 `var counts map[string]int`：读取是否安全，哪条语句失败，失败发生在哪个阶段？给出保留零值声明、在写入前完成初始化的修改。
+
+```go
+counts := map[string]int{"go": 0}
+present, okPresent := counts["go"]
+missing, okMissing := counts["rust"]
+counts["go"]++
+fmt.Println(present, okPresent, missing, okMissing, counts["go"])
+```
 
 <details>
 <summary>查看参考答案</summary>
 
-```go
-package main
-
-import "fmt"
-
-type Employee struct {
-	firstName string
-	lastName  string
-	id        int
-}
-
-func main() {
-	first := Employee{"Ada", "Lovelace", 1}
-	second := Employee{
-		firstName: "Grace",
-		lastName:  "Hopper",
-		id:        2,
-	}
-
-	var third Employee
-	third.firstName = "Alan"
-	third.lastName = "Turing"
-	third.id = 3
-
-	fmt.Printf("%+v\n", first)
-	fmt.Printf("%+v\n", second)
-	fmt.Printf("%+v\n", third)
-}
-```
-
-输出：
+输出为：
 
 ```text
-{firstName:Ada lastName:Lovelace id:1}
-{firstName:Grace lastName:Hopper id:2}
-{firstName:Alan lastName:Turing id:3}
+0 true 0 false 1
 ```
 
-无字段名写法依赖字段的声明顺序，并且必须提供所有字段；带字段名的写法更清晰，也更容易维护。
+`"go"` 存在且值为零，`"rust"` 不存在，两次都读到 `0`，但 `ok` 不同。改成 nil 映射后，两次读取都安全，均返回 `0, false`；`counts["go"]++` 包含写入，执行到这里会发生运行时 `panic`，最后的打印不会执行。
+
+保留零值声明时，在两次读取之后、写入之前增加 `counts = make(map[string]int)` 即可。此前读到的 `ok` 不会随映射初始化而改变，修改后输出为 `0 false 0 false 1`。注意已有 `counts` 时使用 `=`，不是再次 `:=`。
 
 </details>
 
-## 实验 {#ch3-experiments}
+### 练习 5：区分结构体字段赋值与共享元素修改
 
-### 实验 1：数组赋值与传参
-
-验证目标：确认数组赋值和按值传参都会复制全部元素，修改副本不会传播回原数组。
+写出两行输出，说明修改 `b.Name`、`b.Scores[0]` 和给 `b.Scores` 整体赋值各自影响哪些数据。再在 `b := a` 之后补一行，使对 `b` 的所有后续修改都不影响 `a`，并写出修改后的输出。
 
 ```go
-package main
-
-import "fmt"
-
-func change(v [3]int) {
-	v[0] = 9
-	fmt.Println("C", v)
+type Profile struct {
+	Name   string
+	Scores []int
 }
-
-func main() {
-	a := [3]int{1, 2, 3}
-	b := a
-	b[0] = 7
-	fmt.Println("A", a)
-	fmt.Println("B", b)
-	change(a)
-	fmt.Println("D", a)
-}
+a := Profile{Name: "Ada", Scores: []int{1, 2}}
+b := a
+b.Name = "Lin"
+b.Scores[0] = 9
+fmt.Println(a.Name, a.Scores, b.Name, b.Scores)
+b.Scores = []int{7, 8}
+fmt.Println(a.Scores, b.Scores)
 ```
-
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`。
-2. 按执行顺序写出 A、B、C、D 四行的完整数组值。
-3. 分别指出执行 `b := a` 后被 `b[0] = 7` 修改的是哪个变量，调用 `change(a)` 后被 `v[0] = 9` 修改的是哪个变量。
-4. 根据 A～D，分别说明赋值和传参后修改是否传播回原数组 `a`。
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-程序能够编译，运行时不会 `panic`，输出为：
+原代码输出：
 
 ```text
-A [1 2 3]
-B [7 2 3]
-C [9 2 3]
-D [1 2 3]
+Ada [9 2] Lin [9 2]
+[9 2] [7 8]
 ```
 
-`b := a` 会复制完整数组。`b[0] = 7` 只修改副本 `b`，所以 A 中的 `a` 保持不变，B 才显示修改后的值。
+`b := a` 复制了所有字段值。给 `b.Name` 赋新值只改变 `b` 的字段；但 `Scores` 字段复制的是切片描述符，两个结构体仍共享底层数组，所以 `b.Scores[0] = 9` 会影响 `a.Scores`。随后给 `b.Scores` 整体赋值只替换 `b` 中的切片值，既不替换 `a.Scores`，也不撤销此前的元素修改。
 
-函数参数 `v [3]int` 同样按值接收数组。`change(a)` 创建参数副本，`v[0] = 9` 修改的是 `v`，所以 C 能在函数内看到 `[9 2 3]`，返回后 D 中的 `a` 仍是 `[1 2 3]`。因此，无论赋值还是按值传参，对数组副本的元素修改都不会传播回这个原数组。
+在 `b := a` 后、任何元素修改之前补上以下一行；`slices` 对应标准库导入路径 `"slices"`：
+
+```go
+b.Scores = slices.Clone(a.Scores)
+```
+
+修改后输出：
+
+```text
+Ada [1 2] Lin [9 2]
+[1 2] [7 8]
+```
+
+复制出的 `[]int` 有独立元素存储，整数元素也不引用其他数据，因而足以满足本题的隔离要求。若元素本身又是切片、映射或指针，还需根据需要复制其引用的数据；不能把这一修复推广为任意结构体的深复制。可回看[结构体的值复制](#ch3-5)。
 
 </details>
 
-### 实验 2：数组长度与类型身份
+## 面试题 {#ch3-interview}
 
-验证目标：确认数组长度属于类型，并观察常量表达式的值如何决定数组类型身份。
+四题检查容器清空、内容比较、映射副本和结构体类型规则。先独立回答，再展开参考答案；代码上下文与 `fmt` 导入沿用[练习部分](#ch3-exercises)，`slices` 和 `maps` 分别对应标准库导入路径 `"slices"` 和 `"maps"`。
 
-```go
-// same_length.go
-package main
+### 面试题 1：`clear(s)` 与 `s = s[:0]` 等价吗？
 
-import "fmt"
-
-const size = 1 + 2
-
-func take3(v [3]int) { fmt.Println(v) }
-
-func main() {
-	a := [3]int{1, 2, 3}
-	var b [size]int = a
-	take3(b)
-}
-```
+下面代码输出什么？最后一次 `clear` 能否清除 `alias` 中剩余的元素？
 
 ```go
-// different_length.go
-package main
-
-import "fmt"
-
-func main() {
-	a := [3]int{1, 2, 3}
-	b := [4]int{1, 2, 3, 4}
-	a = b
-	fmt.Println(a)
-}
+s := []int{1, 2, 3}
+alias := s
+clear(s[:2])
+s = s[:0]
+clear(s)
+fmt.Println(alias, len(s), cap(s))
 ```
-
-先预测并运行验证，再回答：
-
-1. 预测 `same_length.go` 中 `[size]int = [3]int` 的赋值和 `take3(b)` 调用能否编译，并写出运行输出。
-2. 预测 `different_length.go` 能否编译、错误落在哪条语句，以及 `Println` 能否执行。
-3. 解释数组类型身份判断使用常量表达式文本 `1 + 2`，还是其常量值；再说明长度从 3 变为 4 时唯一改变了什么。
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-`same_length.go` 能够编译，赋值和函数调用都成立，输出为：
-
-```text
-[1 2 3]
-```
-
-数组长度使用常量表达式求值后的常量值，而不是表达式的文本。`size` 的值是 `3`，所以 `[size]int` 与 `[3]int` 是同一个数组类型。
-
-`different_length.go` 不能编译，错误落在 `a = b`：`[4]int` 不能赋给 `[3]int`。编译失败意味着程序不会启动，`fmt.Println(a)` 也不会执行。两个数组的元素类型仍然都是 `int`，唯一变化是长度从 3 变为 4；而长度属于数组类型，所以这一变化已经足以产生不同类型。
+不等价，输出为 `[0 0 3] 0 3`。`clear` 只清零当前长度内的元素，不改变长度和容量；缩短 `s` 只改变其切片值，`alias` 的长度仍为 `3`。最后 `len(s) == 0`，因此 `clear(s)` 不会清除任何元素。
 
 </details>
 
-### 实验 3：切片容量与追加共享
+### 面试题 2：内容相等能代替 nil 判断吗？
 
-验证目标：对比不同容量上界如何决定 `append` 是否复用原底层数组。
-
-以下两个场景视为互不影响的独立程序，每个场景都从新的 `src := []int{1, 2, 3, 4}` 开始：
+下面代码输出什么？`slices.Equal` 和 `maps.Equal` 分别比较什么？
 
 ```go
-// 场景 A
-src := []int{1, 2, 3, 4}
-sub := src[:2]
-out := append(sub, 9)
-fmt.Println(src, sub, out, len(sub), cap(sub), &src[0] == &out[0])
-
-// 场景 B
-src := []int{1, 2, 3, 4}
-sub := src[:2:2]
-out := append(sub, 9)
-fmt.Println(src, sub, out, len(sub), cap(sub), &src[0] == &out[0])
+var s []int
+var m map[string]int
+fmt.Println(slices.Equal(s, []int{}), maps.Equal(m, map[string]int{}))
+fmt.Println(s == nil, m == nil)
 ```
-
-先预测并运行验证，再回答：
-
-1. 预测两个场景能否编译、是否会 `panic`。
-2. 分别写出场景 A、B 的 `src`、`sub`、`out`、`len(sub)`、`cap(sub)` 和地址比较结果。
-3. 两个场景唯一改变的是派生切片的容量上界；说明该变化如何影响 `append` 返回切片是否仍与 `src` 共享底层数组。
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-两个场景都能编译，运行时都不会 `panic`。输出为：
-
-```text
-// 场景 A
-[1 2 9 4] [1 2] [1 2 9] 2 4 true
-
-// 场景 B
-[1 2 3 4] [1 2] [1 2 9] 2 2 false
-```
-
-场景 A 中，`sub := src[:2]` 的长度为 2，容量为 4。它尚有足够容量，`append` 会把 `9` 写入原底层数组的索引 2，所以 `src[2]` 变为 `9`，`out` 与 `src` 的首元素地址相同。`sub` 的长度仍是 2，因此打印 `sub` 时看不到索引 2，但底层存储已经改变。
-
-场景 B 的完整切片表达式把 `sub` 的容量限制为 2。追加一个元素时容量不足，`append` 必须为返回切片准备新的底层数组，所以 `src` 不变，两个首元素地址也不同。
+两行均输出 `true true`。`slices.Equal` 比较长度与各位置的元素；`maps.Equal` 比较键集合与各键对应的值，不比较插入顺序。它们都把 nil 与已初始化的空容器视为内容相等；空字面量本身却不为 nil，因此内容相等不能代替 nil 判断。
 
 </details>
 
-### 实验 4：`copy` 的复制数量与存储独立性
+### 面试题 3：映射赋值与 `maps.Clone` 的清空范围相同吗？
 
-验证目标：确认 `copy` 的复制数量由切片长度决定，并区分复制元素与分配独立存储。
-
-以下两个场景视为互不影响的独立程序，每个场景都从新的 `src := []int{1, 2, 3, 4}` 开始；唯一改变的是 `dst` 的来源。
+下面代码输出什么？`clear(alias)` 会影响哪几个映射变量看到的条目，为什么？
 
 ```go
-// 场景 A：dst 独立分配
-src := []int{1, 2, 3, 4}
-dst := make([]int, 2)
-n := copy(dst, src)
-fmt.Println("A1", n, src, dst)
-src[0] = 9
-fmt.Println("A2", src, dst)
-dst[1] = 8
-fmt.Println("A3", src, dst)
+source := map[string]int{"go": 1}
+alias := source
+cloned := maps.Clone(source)
+clear(alias)
+cloned["go"]++
+fmt.Println(len(source), len(alias), cloned["go"])
 ```
-
-```go
-// 场景 B：dst 是 src 的派生切片
-src := []int{1, 2, 3, 4}
-dst := src[:2]
-n := copy(dst, src)
-fmt.Println("B1", n, src, dst)
-src[0] = 9
-fmt.Println("B2", src, dst)
-dst[1] = 8
-fmt.Println("B3", src, dst)
-```
-
-先预测并运行验证，再回答：
-
-1. 预测两个场景能否编译、是否会 `panic`。
-2. 按执行顺序写出 A1～A3、B1～B3 的完整输出。
-3. 解释两个场景中 `n` 与 `len(src)`、`len(dst)` 的关系。
-4. 说明 `copy` 是否负责创建独立存储，以及为什么 A2/A3 与 B2/B3 的修改传播不同。
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-两个场景都能编译，运行时都不会 `panic`。输出为：
-
-```text
-A1 2 [1 2 3 4] [1 2]
-A2 [9 2 3 4] [1 2]
-A3 [9 2 3 4] [1 8]
-
-B1 2 [1 2 3 4] [1 2]
-B2 [9 2 3 4] [9 2]
-B3 [9 8 3 4] [9 8]
-```
-
-`copy` 返回实际复制的元素数量，即 `min(len(dst), len(src))`。两个场景里 `len(dst) == 2`、`len(src) == 4`，所以 `n` 都是 `2`。
-
-`copy` 只把元素复制到调用方提供的目标切片，不负责为目标创建独立存储。场景 A 的独立性来自此前的 `make([]int, 2)`，所以之后修改任一方都不会影响另一方。场景 B 的 `dst` 是 `src` 的派生切片，二者一直共享底层数组；初始 `copy` 恰好把前两个元素复制到原位置，没有改变值，后续通过任一切片写入都会被另一方观察到。
+不同，输出为 `0 0 2`。直接赋值得到的 `alias` 与 `source` 引用同一份映射数据，清空任一方都会影响另一方。`maps.Clone` 创建独立的键值容器，保留复制时的 `"go": 1`，加一后为 `2`。本题的值是整数，容器独立性与引用数据的浅复制边界应分开判断。
 
 </details>
 
-### 实验 5：切片与数组转换边界
+### 面试题 4：结构体能直接赋值就能用 `==` 比较吗？
 
-验证目标：对比切片转换为数组值和数组指针后的共享关系，并确认转换检查的是切片长度而不是容量。
-
-以下正常路径和失败路径分别运行；失败路径特意设置容量大于长度，以检查转换究竟使用哪一个边界：
+分别判断 A、B 是否合法。若将所有 `Values []int` 改为 `Values [1]int`，并把字面量 `[]int{1}` 改为 `[1]int{1}`，比较是否成立？
 
 ```go
-// convert_ok.go 的 main
-s := []int{10, 20, 30}
-value := [2]int(s)
-pointer := (*[2]int)(s)
-value[0] = 11
-fmt.Println("A", s, value, *pointer)
-pointer[1] = 22
-fmt.Println("B", s, value, *pointer)
-
-// convert_too_long.go 的 main
-s := make([]int, 3, 5)
-copy(s, []int{10, 20, 30})
-value := [4]int(s)
-fmt.Println(value)
+type Record struct{ Values []int }
+a := Record{Values: []int{1}}
+var b struct{ Values []int } = a // A
+fmt.Println(a == b)              // B
 ```
-
-先预测并运行验证，再回答：
-
-1. 预测正常路径能否编译、是否会 `panic`，并写出 A、B 中 `s`、`value`、`*pointer` 的完整值。
-2. 分别解释修改数组值和通过数组指针修改时，哪一个对象的元素发生变化。
-3. 预测失败路径能否编译、是否会 `panic`、能否运行到 `Println`，并说明失败阶段和原因。
 
 <details>
-<summary>查看参考答案与解释</summary>
+<summary>查看参考答案</summary>
 
-正常路径能够编译，运行时不会 `panic`，输出为：
-
-```text
-A [10 20 30] [11 20] [10 20]
-B [10 22 30] [11 20] [10 22]
-```
-
-`[2]int(s)` 复制 `s` 的前两个元素，得到独立数组 `value`，所以 `value[0] = 11` 不会改变 `s`。`(*[2]int)(s)` 得到指向切片前两个元素的数组指针，没有复制元素；`pointer[1] = 22` 因而修改 `s[1]`。独立的 `value` 仍保持 `[11 20]`。
-
-失败路径也能通过编译，因为切片长度是运行时属性。执行 `[4]int(s)` 时，切片容量虽为 `5`，长度 `3` 仍小于目标数组长度 `4`，程序在转换处 `panic`，不会运行到 `fmt.Println(value)`。判断条件是 `len(s) >= 4`，即使底层数组容量更大但切片长度不足也不能完成转换。
-
-</details>
-
-### 实验 6：清零切片与清空映射
-
-验证目标：观察 `clear` 对共享切片、共享映射和 nil 映射的影响，并区分清零元素与缩短切片长度。
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	s := []int{1, 2, 3}
-	alias := s[:]
-	clear(s[:2])
-	fmt.Println("A", s, alias, len(s), cap(s))
-	s = s[:0]
-	fmt.Println("B", len(s), cap(s), alias)
-	clear(s)
-	fmt.Println("C", alias)
-
-	m := map[string]int{"x": 1}
-	other := m
-	clear(m)
-	fmt.Println("D", len(m), len(other), m == nil)
-	other["y"] = 2
-	fmt.Println("E", m["y"])
-	var missing map[string]int
-	clear(missing)
-	fmt.Println("F", len(missing), missing == nil)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. A～C 中哪些元素会变为零？`s = s[:0]` 是否会改变 `alias` 的长度？
-2. D～F 中清空操作是否影响共享的映射？nil 映射是否被初始化？
-3. 另建程序，保留 `var missing map[string]int` 和 `clear(missing)` 后，执行 `missing["x"] = 1`，记录失败阶段。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-```text
-A [0 0 3] [0 0 3] 3 3
-B 0 3 [0 0 3]
-C [0 0 3]
-D 0 0 false
-E 2
-F 0 true
-```
-
-`clear(s[:2])` 只清零前两个共享元素。随后把 `s` 的长度改为零，不会修改 `alias` 的长度或元素；再调用 `clear(s)` 时已没有长度范围内的元素，所以 C 中的 `3` 保留。
-
-`m` 与 `other` 引用同一个映射，清空后两者长度都为零，仍可写入。`clear(missing)` 则是无操作，`missing` 仍为 nil；对它写入会在运行时触发 `panic: assignment to entry in nil map`。
-
-</details>
-
-### 实验 7：字符串字节与 UTF-8 边界
-
-验证目标：对比字符串的字节长度与代码点数量，并观察切开多字节编码后得到的无效 UTF-8。
-
-```go
-package main
-
-import (
-	"fmt"
-	"unicode/utf8"
-)
-
-func main() {
-	s := "Hi 🌞"
-	part := s[3:4]
-	fmt.Println("A", len(s), utf8.RuneCountInString(s), utf8.ValidString(s))
-	fmt.Printf("B % x\n", []byte(s))
-	fmt.Printf("C %d % x\n", s[3], []byte(part))
-	fmt.Printf("D %q %t\n", part, utf8.ValidString(part))
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`。
-2. 写出 A 的三个值，并分别说明 `len` 和 `RuneCountInString` 的计数单位。
-3. 写出 B 的完整十六进制字节序列，以及 C 中 `s[3]` 的十进制值和 `part` 的十六进制字节。
-4. 预测 D 的 `%q` 显示和 UTF-8 有效性；解释为什么必须同时保存原始字节与有效性，不能只看终端显示。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A 7 4 true
-B 48 69 20 f0 9f 8c 9e
-C 240 f0
-D "\xf0" false
-```
-
-`len(s)` 统计 UTF-8 编码后的字节数：ASCII 的 `H`、`i` 和空格各占 1 字节，`🌞` 占 4 字节，共 7 字节。`utf8.RuneCountInString` 按解码得到的 Unicode 代码点计数，因此结果为 4。
-
-索引字符串得到单个字节，`s[3]` 是太阳符号编码的首字节 `0xf0`，十进制为 `240`。切片 `s[3:4]` 也只包含这个字节，它不构成完整的 UTF-8 编码，所以 `utf8.ValidString(part)` 为 `false`，`%q` 将原始无效字节转义为 `"\xf0"`。
-
-终端可能替换、隐藏或以不同方式渲染无效 UTF-8。十六进制字节记录实际数据，`ValidString` 记录编码是否合法；两者结合才能避免把显示效果误当成原始内容。
-
-</details>
-
-### 实验 8：nil 映射的读写边界
-
-验证目标：确认 nil 映射读取会返回零值而写入会 `panic`，并用逗号 `ok` 区分缺失键和零值条目。
-
-以下读取和写入场景视为两个互不影响的独立程序：
-
-```go
-// read.go 的 main
-var nilMap map[string]int
-withZero := map[string]int{"zero": 0}
-a, okA := nilMap["missing"]
-b, okB := withZero["missing"]
-c, okC := withZero["zero"]
-fmt.Println("A", a, okA)
-fmt.Println("B", b, okB)
-fmt.Println("C", c, okC)
-
-// write.go 的 main
-var nilMap map[string]int
-fmt.Println("before")
-nilMap["x"] = 1
-fmt.Println("after")
-```
-
-先预测并运行验证，再回答：
-
-1. 预测两个场景能否编译。
-2. 逐行写出读取场景的 A、B、C，并说明为什么 B/C 都读取到 `0`，却必须用 `ok` 区分。
-3. 预测写入场景会打印哪些行、是否 `panic`、失败发生在哪个阶段。
-4. 分别用一句话概括 nil 映射的读取规则和写入规则。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-两个场景都能编译。读取场景不会 `panic`，输出为：
-
-```text
-A 0 false
-B 0 false
-C 0 true
-```
-
-从 nil 映射读取与从非 nil 映射读取缺失键一样，都会得到元素类型的零值和 `false`。键 `"zero"` 确实存在，只是保存的值恰好也是 `0`，因此 C 的第二个结果是 `true`。只看单值结果无法区分 B 与 C，必须检查 `ok`。
-
-写入场景先打印：
-
-```text
-before
-```
-
-随后执行 `nilMap["x"] = 1` 时发生运行时 `panic: assignment to entry in nil map`，所以不会打印 `after`。概括来说：读取 nil 映射是安全的，会像读取缺失键一样返回零值；写入 nil 映射会在运行时 `panic`，必须先用字面量或 `make` 初始化。
-
-</details>
-
-### 实验 9：映射内容比较与 nil 状态
-
-验证目标：区分映射内容相等与映射值是否为 nil，并确认插入顺序不影响 `maps.Equal`。
-
-```go
-package main
-
-import (
-	"fmt"
-	"maps"
-)
-
-func main() {
-	var nilMap map[string]int
-	emptyMap := map[string]int{}
-	first := map[string]int{"a": 1, "b": 2}
-	second := make(map[string]int)
-	second["b"] = 2
-	second["a"] = 1
-
-	fmt.Println("A", maps.Equal(nilMap, emptyMap))
-	fmt.Println("B", nilMap == nil, emptyMap == nil)
-	fmt.Println("C", maps.Equal(first, second))
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`。
-2. 逐行写出 A、B、C 的完整输出。
-3. 说明 A 与 B 分别回答“内容是否相等”还是“映射值是否为 nil”，为什么一个结论不能替代另一个。
-4. 说明 C 中不同的插入顺序是否会影响 `maps.Equal`，以及该函数实际比较什么。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A true
-B true false
-C true
-```
-
-`maps.Equal` 比较长度以及每个键对应的值。nil 映射和已初始化的空映射长度都为 0、都没有条目，所以 A 的内容比较结果为 `true`。B 使用 `== nil` 检查映射值是否为 nil：`nilMap` 是 nil，`emptyMap` 不是；也可以用 `!= nil` 检查相反条件。内容相同不代表初始化状态相同，因此 A 不能替代 B。
-
-映射没有受保证的条目顺序，`maps.Equal` 也不比较插入顺序。C 中两个映射包含相同的键 `a`、`b`，对应值分别都是 `1`、`2`，所以结果为 `true`。
-
-</details>
-
-### 实验 10：结构体的浅复制
-
-验证目标：观察结构体赋值如何复制字段值，并确认切片字段的副本仍可能共享底层数组。
-
-```go
-package main
-
-import "fmt"
-
-type Person struct {
-	Name string
-	Tags []string
-}
-
-func main() {
-	a := Person{Name: "Ada", Tags: []string{"go", "db"}}
-	b := a
-	b.Name = "Grace"
-	fmt.Println("A", a.Name, b.Name, a.Tags, b.Tags)
-	b.Tags[0] = "rust"
-	fmt.Println("B", a.Name, b.Name, a.Tags, b.Tags)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测程序能否编译、是否会 `panic`。
-2. 写出 A、B 两行的完整输出。
-3. 对比修改 `b.Name` 与修改 `b.Tags[0]`，分别说明为什么前者不影响 `a.Name`，后者却影响 `a.Tags[0]`。
-4. 明确回答 `a.Tags` 和 `b.Tags` 是“同一个切片变量”还是“两个切片值共享同一个底层数组”。
-5. 解释为什么观察 `a.Name != b.Name` 不能证明结构体中的所有字段都已深复制。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-程序能够编译，运行时不会 `panic`，输出为：
-
-```text
-A Ada Grace [go db] [go db]
-B Ada Grace [rust db] [rust db]
-```
-
-`b := a` 复制整个结构体值。字符串字段 `Name` 的值被复制，给 `b.Name` 重新赋值只替换 `b` 的字段，不会修改 `a.Name`。
-
-切片字段被复制的则是切片描述符，而不是其全部元素。`a.Tags` 与 `b.Tags` 是两个切片值，但它们的描述符指向同一个底层数组；通过 `b.Tags[0]` 修改共享数组后，两个切片都能看到 `"rust"`。`Name` 字段互不影响只证明这个字段的赋值行为，不能证明引用了其他存储的字段也完成了递归复制。
-
-</details>
-
-### 实验 11：结构体可比较性
-
-验证目标：确认结构体只有在全部字段均可比较时才能使用 `==`，并比较数组字段与切片字段的影响。
-
-```go
-// comparable.go
-package main
-
-import "fmt"
-
-type Key struct {
-	Name  string
-	Codes [2]int
-}
-
-func main() {
-	a := Key{Name: "go", Codes: [2]int{1, 2}}
-	b := Key{Name: "go", Codes: [2]int{1, 2}}
-	c := Key{Name: "go", Codes: [2]int{1, 3}}
-	fmt.Println(a == b, a == c)
-}
-```
-
-```go
-// not_comparable.go
-package main
-
-import "fmt"
-
-type Key struct {
-	Name  string
-	Codes []int
-}
-
-func main() {
-	a := Key{Name: "go", Codes: []int{1, 2}}
-	b := Key{Name: "go", Codes: []int{1, 2}}
-	fmt.Println(a == b)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测 `comparable.go` 能否编译，并写出两个比较表达式的布尔值。
-2. 预测 `not_comparable.go` 能否编译、错误落在哪个表达式；不要用 `reflect.DeepEqual` 或逐字段比较绕开 `==`。
-3. 两个类型唯一改变的是 `Codes` 从 `[2]int` 变为 `[]int`；解释结构体可比较性如何由这一字段决定。
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-`comparable.go` 能够编译，运行输出为：
-
-```text
-true false
-```
-
-数组 `[2]int` 可比较，字符串也可比较，因此 `Key` 的所有字段都可比较。`a == b` 的每个字段都相等；`a == c` 的 `Codes[1]` 不同。
-
-`not_comparable.go` 不能编译，错误落在 `a == b`。切片除与 `nil` 比较外不能使用 `==`，只要结构体含有一个不可比较字段，整个结构体就不可比较。这里唯一改变的 `Codes []int` 足以使 `Key` 失去可比较性，两个切片当前包含相同元素也不会改变这条类型规则。
-
-</details>
-
-### 实验 12：具名与匿名结构体类型身份
-
-验证目标：确认具名结构体与相同底层类型的匿名结构体之间的赋值、转换和比较规则，并观察字段顺序的影响。
-
-```go
-// same_fields.go
-package main
-
-import "fmt"
-
-type Person struct {
-	Name string
-	Age  int
-}
-
-func main() {
-	p := Person{Name: "Ada", Age: 36}
-	var anonymous struct {
-		Name string
-		Age  int
-	} = p
-	back := Person(anonymous)
-	fmt.Println(anonymous, back, p == anonymous)
-}
-```
-
-```go
-// reordered_fields.go
-package main
-
-import "fmt"
-
-type Person struct {
-	Name string
-	Age  int
-}
-
-func main() {
-	p := Person{Name: "Ada", Age: 36}
-	var reordered struct {
-		Age  int
-		Name string
-	} = p
-	fmt.Println(reordered)
-}
-```
-
-先预测并运行验证，再回答：
-
-1. 预测 `same_fields.go` 中的直接赋值、显式转换和比较能否编译，并写出完整输出。将 `back := Person(anonymous)` 改为 `var back Person = anonymous` 后是否仍成立？
-2. 预测 `reordered_fields.go` 能否编译以及错误落在哪条赋值。赋值双方的字段名和类型相同，只改变字段顺序会有什么影响？
-3. 解释为什么字段集合相同、但顺序不同，仍不足以完成直接赋值。保持字段顺序不变、只添加字段标签时，直接赋值与显式转换的规则又有何区别？
-
-<details>
-<summary>查看参考答案与解释</summary>
-
-`same_fields.go` 能够编译。具名的 `Person` 与匿名结构体具有相同的底层类型，并且至少一方不是具名类型，所以可以直接赋值；显式转换回 `Person` 和直接赋值回 `Person` 都成立；字段均可比较，因此 `p == anonymous` 也合法且为 `true`。输出为：
-
-```text
-{Ada 36} {Ada 36} true
-```
-
-`reordered_fields.go` 不能编译，错误落在把 `p` 赋给 `reordered` 的声明上，`fmt.Println` 不会执行。结构体的类型身份由字段序列决定，其中包括字段的顺序、名称、类型、是否嵌入以及标签等信息，而不是把字段看成无序集合。因此，即使两个结构体都有 `Name string` 和 `Age int`，顺序不同也会得到不同的底层结构体类型，不能完成这里的直接赋值。只改变字段标签也会改变底层类型，从而阻止这里的直接赋值；普通结构体的显式转换忽略标签，因此仅标签不同仍可转换。
+A 合法，B 不合法。`Record` 与匿名结构体具有相同的底层类型，且至少一方不是具名类型，满足赋值规则；但切片字段不可比较，因此不能对两个结构体使用 `==`。改成 `[1]int` 字段后，赋值仍合法，字段也可比较，程序输出 `true`。类型兼容与字段可比较性是两项独立条件。
 
 </details>
 
