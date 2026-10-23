@@ -19,6 +19,8 @@ const goGuideChapters = [
   { text: '第 3 章 复合类型', link: '/books/go-guide/chapter-03' },
   { text: '第 4 章 代码块、变量隐藏和控制结构', link: '/books/go-guide/chapter-04' },
   { text: '第 5 章 函数', link: '/books/go-guide/chapter-05' },
+  { text: '第 6 章 指针', link: '/books/go-guide/chapter-06' },
+  { text: '第 7 章 类型、方法和接口', link: '/books/go-guide/chapter-07' },
 ]
 
 function tokenizeSearchText(text: string): string[] {
