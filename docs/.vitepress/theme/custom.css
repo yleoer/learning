@@ -14,7 +14,7 @@
   --claude-border-strong: #cbc9c2;
   --claude-text: #131313;
   --claude-text-secondary: #52514e;
-  --claude-text-muted: #7b7974;
+  --claude-text-muted: #686661;
   --claude-ui-font: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --claude-prose-font: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --claude-mono-font: 'JetBrains Mono', 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
@@ -410,27 +410,96 @@ body {
   line-height: 1.5;
 }
 
-.reading-card {
-  display: grid;
-  gap: 6px;
-  margin: 20px 0;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-  padding: 14px 16px;
-  color: var(--vp-c-text-2);
-  background: var(--vp-c-bg-soft);
-  font-family: var(--claude-ui-font);
-  font-size: 14px;
-  line-height: 20px;
+.home-topics {
+  margin: 0 auto 48px;
+  padding: 0 24px;
+  max-width: 1280px;
 }
 
-.reading-card strong {
-  color: var(--claude-clay-strong);
+.home-topics-inner {
+  display: grid;
+  gap: 24px 48px;
+  border-block: 1px solid var(--vp-c-divider);
+  padding: 24px 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.home-topics h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
   font-weight: 600;
 }
 
-.dark .reading-card strong {
-  color: var(--claude-clay);
+.available-topic + .available-topic {
+  margin-top: 16px;
+}
+
+.topic-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+}
+
+.topic-heading > a {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.home-topics p {
+  margin: 8px 0 0;
+  color: var(--vp-c-text-2);
+}
+
+.home-topics a {
+  color: var(--claude-link);
+  text-underline-offset: 3px;
+}
+
+.home-topics a:hover {
+  color: var(--claude-link-hover);
+  text-decoration: underline;
+}
+
+.topic-status {
+  color: var(--vp-c-text-2);
+}
+
+.home-topics a:focus-visible,
+.chapter-outline :is(a, button):focus-visible {
+  outline: 2px solid var(--claude-link);
+  outline-offset: -2px;
+}
+
+.planned-topics ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planned-topics li a {
+  display: inline-block;
+  padding: 4px 0;
+}
+
+@media (min-width: 640px) {
+  .home-topics {
+    padding-inline: 48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .home-topics {
+    padding-inline: 64px;
+  }
+
+  .home-topics-inner {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 /* Reading surface */
@@ -790,6 +859,101 @@ body {
 }
 
 /* Outline, paging and search */
+.VPDocAside > .chapter-outline + .VPDocAsideOutline.has-outline {
+  display: none;
+}
+
+.chapter-outline {
+  padding-bottom: 24px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.chapter-outline h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chapter-outline ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.outline-row {
+  display: flex;
+  align-items: flex-start;
+  border-radius: 4px;
+}
+
+.chapter-outline a {
+  display: block;
+  padding: 6px 8px;
+  min-width: 0;
+  color: var(--vp-c-text-2);
+  overflow-wrap: anywhere;
+}
+
+.outline-row > a {
+  flex: 1;
+}
+
+.outline-row.is-current {
+  background: var(--vp-c-bg-soft);
+}
+
+.outline-row.is-current > a,
+.chapter-outline a[aria-current],
+.chapter-outline a:hover {
+  color: var(--claude-link);
+}
+
+.chapter-outline a[aria-current] {
+  font-weight: 600;
+}
+
+.outline-row button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  color: var(--vp-c-text-2);
+}
+
+.outline-row button:hover {
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-default-soft);
+}
+
+.outline-row button[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+
+.chapter-outline .outline-children {
+  margin: 4px 0 8px 8px;
+  border-left: 1px solid var(--vp-c-divider);
+  padding-left: 8px;
+}
+
+.chapter-outline .outline-children a {
+  padding-block: 5px;
+}
+
+.VPLocalNavOutlineDropdown .outline-link {
+  height: auto;
+  padding-block: 8px;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+.VPLocalNavOutlineDropdown > button {
+  min-width: 44px;
+  min-height: 32px;
+}
+
 .VPDocAsideOutline .content {
   border-left-color: var(--vp-c-divider);
 }
@@ -887,6 +1051,24 @@ body {
 
   .VPDoc {
     padding-top: 48px;
+  }
+}
+
+@media (max-width: 1279px) {
+  .VPNavBar .VPNavBarMenu,
+  .VPNavBar .VPNavBarTranslations,
+  .VPNavBar .VPNavBarAppearance,
+  .VPNavBar .VPNavBarSocialLinks,
+  .VPNavBar .VPNavBarExtra {
+    display: none;
+  }
+
+  .VPNavBar .VPNavBarHamburger {
+    display: flex;
+  }
+
+  .VPNav .VPNavScreen {
+    display: block;
   }
 }
 

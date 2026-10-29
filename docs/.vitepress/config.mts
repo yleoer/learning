@@ -1,16 +1,7 @@
 import { defineConfig } from 'vitepress'
+import { topics as books } from './topics'
 
 const siteUrl = 'https://learning.yxuefeng.com'
-
-const books = [
-  { text: 'Go 语言', link: '/books/go-guide/' },
-  { text: 'Go 并发', link: '/books/go-concurrency/' },
-  { text: 'MySQL', link: '/books/mysql/' },
-  { text: 'Redis', link: '/books/redis/' },
-  { text: '架构', link: '/books/architecture/' },
-  { text: '图解系统', link: '/books/system/' },
-  { text: '图解网络', link: '/books/network/' },
-]
 
 const goGuideChapters = [
   { text: '前言', link: '/books/go-guide/' },
@@ -167,7 +158,7 @@ export default defineConfig({
     darkModeSwitchLabel: '切换主题',
     lightModeSwitchTitle: '切换到浅色主题',
     darkModeSwitchTitle: '切换到深色主题',
-    outline: { level: [2, 3], label: '目录' },
+    outline: { level: 2, label: '目录' },
     footer: {
       message: '持续学习，持续输出。',
       copyright: 'Copyright © 2026 技术学习笔记',
