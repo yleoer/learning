@@ -20,8 +20,3 @@ features:
     title: 为复习整理
     details: 练习检查理解，折叠答案保留思考空间，参考资料指向可靠的一手来源。
 ---
-
-<div class="reading-card">
-  <strong>正在更新</strong>
-  <span>Go 语言专题已整理至第 3 章，其他专题将随阅读与实验进度逐步补充。</span>
-</div>

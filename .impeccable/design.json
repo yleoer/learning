@@ -1,0 +1,742 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-29T05:22:20Z",
+  "title": "Design System: 技术学习笔记",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "陶土橙",
+        "tonalRamp": [
+          "oklch(15.00% 0.0574 37.75)",
+          "oklch(26.43% 0.1011 37.75)",
+          "oklch(37.86% 0.1339 37.75)",
+          "oklch(49.29% 0.1339 37.75)",
+          "oklch(60.71% 0.1339 37.75)",
+          "oklch(72.14% 0.1339 37.75)",
+          "oklch(83.57% 0.0880 37.75)",
+          "oklch(95.00% 0.0268 37.75)"
+        ]
+      },
+      "clay": {
+        "role": "primary",
+        "displayName": "明陶土橙",
+        "tonalRamp": [
+          "oklch(15.00% 0.0561 38.76)",
+          "oklch(26.43% 0.0988 38.76)",
+          "oklch(37.86% 0.1308 38.76)",
+          "oklch(49.29% 0.1308 38.76)",
+          "oklch(60.71% 0.1308 38.76)",
+          "oklch(72.14% 0.1308 38.76)",
+          "oklch(83.57% 0.0860 38.76)",
+          "oklch(95.00% 0.0262 38.76)"
+        ]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "陶土橙·悬停",
+        "tonalRamp": [
+          "oklch(15.00% 0.0556 38.32)",
+          "oklch(26.43% 0.0979 38.32)",
+          "oklch(37.86% 0.1296 38.32)",
+          "oklch(49.29% 0.1296 38.32)",
+          "oklch(60.71% 0.1296 38.32)",
+          "oklch(72.14% 0.1296 38.32)",
+          "oklch(83.57% 0.0852 38.32)",
+          "oklch(95.00% 0.0259 38.32)"
+        ]
+      },
+      "primary-active": {
+        "role": "primary",
+        "displayName": "陶土橙·按下",
+        "tonalRamp": [
+          "oklch(15.00% 0.0517 38.11)",
+          "oklch(26.43% 0.0911 38.11)",
+          "oklch(37.86% 0.1206 38.11)",
+          "oklch(49.29% 0.1206 38.11)",
+          "oklch(60.71% 0.1206 38.11)",
+          "oklch(72.14% 0.1206 38.11)",
+          "oklch(83.57% 0.0792 38.11)",
+          "oklch(95.00% 0.0241 38.11)"
+        ]
+      },
+      "primary-dark-hover": {
+        "role": "primary",
+        "displayName": "暗色陶土橙·悬停",
+        "tonalRamp": [
+          "oklch(15.00% 0.0504 41.19)",
+          "oklch(26.43% 0.0888 41.19)",
+          "oklch(37.86% 0.1176 41.19)",
+          "oklch(49.29% 0.1176 41.19)",
+          "oklch(60.71% 0.1176 41.19)",
+          "oklch(72.14% 0.1176 41.19)",
+          "oklch(83.57% 0.0773 41.19)",
+          "oklch(95.00% 0.0235 41.19)"
+        ]
+      },
+      "primary-dark-active": {
+        "role": "primary",
+        "displayName": "暗色陶土橙·按下",
+        "tonalRamp": [
+          "oklch(15.00% 0.0536 38.83)",
+          "oklch(26.43% 0.0944 38.83)",
+          "oklch(37.86% 0.1250 38.83)",
+          "oklch(49.29% 0.1250 38.83)",
+          "oklch(60.71% 0.1250 38.83)",
+          "oklch(72.14% 0.1250 38.83)",
+          "oklch(83.57% 0.0822 38.83)",
+          "oklch(95.00% 0.0250 38.83)"
+        ]
+      },
+      "primary-dark-text": {
+        "role": "primary",
+        "displayName": "深陶土文字",
+        "tonalRamp": [
+          "oklch(15.00% 0.0138 39.18)",
+          "oklch(26.43% 0.0243 39.18)",
+          "oklch(37.86% 0.0322 39.18)",
+          "oklch(49.29% 0.0322 39.18)",
+          "oklch(60.71% 0.0322 39.18)",
+          "oklch(72.14% 0.0322 39.18)",
+          "oklch(83.57% 0.0212 39.18)",
+          "oklch(95.00% 0.0064 39.18)"
+        ]
+      },
+      "link": {
+        "role": "secondary",
+        "displayName": "墨蓝",
+        "tonalRamp": [
+          "oklch(15.00% 0.0549 256.54)",
+          "oklch(26.43% 0.0968 256.54)",
+          "oklch(37.86% 0.1282 256.54)",
+          "oklch(49.29% 0.1282 256.54)",
+          "oklch(60.71% 0.1282 256.54)",
+          "oklch(72.14% 0.1282 256.54)",
+          "oklch(83.57% 0.0843 256.54)",
+          "oklch(95.00% 0.0256 256.54)"
+        ]
+      },
+      "link-hover": {
+        "role": "secondary",
+        "displayName": "墨蓝·悬停",
+        "tonalRamp": [
+          "oklch(15.00% 0.0458 256.78)",
+          "oklch(26.43% 0.0807 256.78)",
+          "oklch(37.86% 0.1069 256.78)",
+          "oklch(49.29% 0.1069 256.78)",
+          "oklch(60.71% 0.1069 256.78)",
+          "oklch(72.14% 0.1069 256.78)",
+          "oklch(83.57% 0.0703 256.78)",
+          "oklch(95.00% 0.0214 256.78)"
+        ]
+      },
+      "link-dark": {
+        "role": "secondary",
+        "displayName": "暗色墨蓝",
+        "tonalRamp": [
+          "oklch(15.00% 0.0507 253.58)",
+          "oklch(26.43% 0.0893 253.58)",
+          "oklch(37.86% 0.1183 253.58)",
+          "oklch(49.29% 0.1183 253.58)",
+          "oklch(60.71% 0.1183 253.58)",
+          "oklch(72.14% 0.1183 253.58)",
+          "oklch(83.57% 0.0777 253.58)",
+          "oklch(95.00% 0.0237 253.58)"
+        ]
+      },
+      "link-dark-hover": {
+        "role": "secondary",
+        "displayName": "暗色墨蓝·悬停",
+        "tonalRamp": [
+          "oklch(15.00% 0.0373 252.57)",
+          "oklch(26.43% 0.0657 252.57)",
+          "oklch(37.86% 0.0870 252.57)",
+          "oklch(49.29% 0.0870 252.57)",
+          "oklch(60.71% 0.0870 252.57)",
+          "oklch(72.14% 0.0870 252.57)",
+          "oklch(83.57% 0.0572 252.57)",
+          "oklch(95.00% 0.0174 252.57)"
+        ]
+      },
+      "code": {
+        "role": "secondary",
+        "displayName": "代码红",
+        "tonalRamp": [
+          "oklch(15.00% 0.0598 25.14)",
+          "oklch(26.43% 0.1054 25.14)",
+          "oklch(37.86% 0.1396 25.14)",
+          "oklch(49.29% 0.1396 25.14)",
+          "oklch(60.71% 0.1396 25.14)",
+          "oklch(72.14% 0.1396 25.14)",
+          "oklch(83.57% 0.0917 25.14)",
+          "oklch(95.00% 0.0279 25.14)"
+        ]
+      },
+      "code-dark": {
+        "role": "secondary",
+        "displayName": "暗色代码红",
+        "tonalRamp": [
+          "oklch(15.00% 0.0370 19.11)",
+          "oklch(26.43% 0.0651 19.11)",
+          "oklch(37.86% 0.0863 19.11)",
+          "oklch(49.29% 0.0863 19.11)",
+          "oklch(60.71% 0.0863 19.11)",
+          "oklch(72.14% 0.0863 19.11)",
+          "oklch(83.57% 0.0567 19.11)",
+          "oklch(95.00% 0.0173 19.11)"
+        ]
+      },
+      "page": {
+        "role": "neutral",
+        "displayName": "暖白",
+        "tonalRamp": [
+          "oklch(15.00% 0.0011 106.45)",
+          "oklch(26.43% 0.0020 106.45)",
+          "oklch(37.86% 0.0026 106.45)",
+          "oklch(49.29% 0.0026 106.45)",
+          "oklch(60.71% 0.0026 106.45)",
+          "oklch(72.14% 0.0026 106.45)",
+          "oklch(83.57% 0.0017 106.45)",
+          "oklch(95.00% 0.0005 106.45)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "侧栏白",
+        "tonalRamp": [
+          "oklch(15.00% 0.0006 106.42)",
+          "oklch(26.43% 0.0010 106.42)",
+          "oklch(37.86% 0.0013 106.42)",
+          "oklch(49.29% 0.0013 106.42)",
+          "oklch(60.71% 0.0013 106.42)",
+          "oklch(72.14% 0.0013 106.42)",
+          "oklch(83.57% 0.0009 106.42)",
+          "oklch(95.00% 0.0003 106.42)"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "容器白",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "柔和暖灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0017 106.47)",
+          "oklch(26.43% 0.0030 106.47)",
+          "oklch(37.86% 0.0040 106.47)",
+          "oklch(49.29% 0.0040 106.47)",
+          "oklch(60.71% 0.0040 106.47)",
+          "oklch(72.14% 0.0040 106.47)",
+          "oklch(83.57% 0.0026 106.47)",
+          "oklch(95.00% 0.0008 106.47)"
+        ]
+      },
+      "muted-strong": {
+        "role": "neutral",
+        "displayName": "选中暖灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0018 91.45)",
+          "oklch(26.43% 0.0031 91.45)",
+          "oklch(37.86% 0.0041 91.45)",
+          "oklch(49.29% 0.0041 91.45)",
+          "oklch(60.71% 0.0041 91.45)",
+          "oklch(72.14% 0.0041 91.45)",
+          "oklch(83.57% 0.0027 91.45)",
+          "oklch(95.00% 0.0008 91.45)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "细线灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0029 97.36)",
+          "oklch(26.43% 0.0051 97.36)",
+          "oklch(37.86% 0.0068 97.36)",
+          "oklch(49.29% 0.0068 97.36)",
+          "oklch(60.71% 0.0068 97.36)",
+          "oklch(72.14% 0.0068 97.36)",
+          "oklch(83.57% 0.0045 97.36)",
+          "oklch(95.00% 0.0014 97.36)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "较强边界灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0042 93.59)",
+          "oklch(26.43% 0.0074 93.59)",
+          "oklch(37.86% 0.0099 93.59)",
+          "oklch(49.29% 0.0099 93.59)",
+          "oklch(60.71% 0.0099 93.59)",
+          "oklch(72.14% 0.0099 93.59)",
+          "oklch(83.57% 0.0065 93.59)",
+          "oklch(95.00% 0.0020 93.59)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "正文墨色",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "次文字灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0022 91.51)",
+          "oklch(26.43% 0.0038 91.51)",
+          "oklch(37.86% 0.0050 91.51)",
+          "oklch(49.29% 0.0050 91.51)",
+          "oklch(60.71% 0.0050 91.51)",
+          "oklch(72.14% 0.0050 91.51)",
+          "oklch(83.57% 0.0033 91.51)",
+          "oklch(95.00% 0.0010 91.51)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "辅助文字灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0035 88.69)",
+          "oklch(26.43% 0.0062 88.69)",
+          "oklch(37.86% 0.0082 88.69)",
+          "oklch(49.29% 0.0082 88.69)",
+          "oklch(60.71% 0.0082 88.69)",
+          "oklch(72.14% 0.0082 88.69)",
+          "oklch(83.57% 0.0054 88.69)",
+          "oklch(95.00% 0.0016 88.69)"
+        ]
+      },
+      "soft": {
+        "role": "neutral",
+        "displayName": "轻度覆盖灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "page-dark": {
+        "role": "neutral",
+        "displayName": "暖炭灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0008 106.54)",
+          "oklch(26.43% 0.0014 106.54)",
+          "oklch(37.86% 0.0019 106.54)",
+          "oklch(49.29% 0.0019 106.54)",
+          "oklch(60.71% 0.0019 106.54)",
+          "oklch(72.14% 0.0019 106.54)",
+          "oklch(83.57% 0.0012 106.54)",
+          "oklch(95.00% 0.0004 106.54)"
+        ]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "侧栏炭黑",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "raised-dark": {
+        "role": "neutral",
+        "displayName": "容器炭黑",
+        "tonalRamp": [
+          "oklch(15.00% 0.0008 106.56)",
+          "oklch(26.43% 0.0014 106.56)",
+          "oklch(37.86% 0.0019 106.56)",
+          "oklch(49.29% 0.0019 106.56)",
+          "oklch(60.71% 0.0019 106.56)",
+          "oklch(72.14% 0.0019 106.56)",
+          "oklch(83.57% 0.0013 106.56)",
+          "oklch(95.00% 0.0004 106.56)"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "柔和炭灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0008 106.52)",
+          "oklch(26.43% 0.0014 106.52)",
+          "oklch(37.86% 0.0018 106.52)",
+          "oklch(49.29% 0.0018 106.52)",
+          "oklch(60.71% 0.0018 106.52)",
+          "oklch(72.14% 0.0018 106.52)",
+          "oklch(83.57% 0.0012 106.52)",
+          "oklch(95.00% 0.0004 106.52)"
+        ]
+      },
+      "muted-strong-dark": {
+        "role": "neutral",
+        "displayName": "选中炭灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0015 106.60)",
+          "oklch(26.43% 0.0026 106.60)",
+          "oklch(37.86% 0.0035 106.60)",
+          "oklch(49.29% 0.0035 106.60)",
+          "oklch(60.71% 0.0035 106.60)",
+          "oklch(72.14% 0.0035 106.60)",
+          "oklch(83.57% 0.0023 106.60)",
+          "oklch(95.00% 0.0007 106.60)"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "暗色细线灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0022 106.67)",
+          "oklch(26.43% 0.0039 106.67)",
+          "oklch(37.86% 0.0051 106.67)",
+          "oklch(49.29% 0.0051 106.67)",
+          "oklch(60.71% 0.0051 106.67)",
+          "oklch(72.14% 0.0051 106.67)",
+          "oklch(83.57% 0.0034 106.67)",
+          "oklch(95.00% 0.0010 106.67)"
+        ]
+      },
+      "border-strong-dark": {
+        "role": "neutral",
+        "displayName": "暗色边界灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0029 95.22)",
+          "oklch(26.43% 0.0051 95.22)",
+          "oklch(37.86% 0.0067 95.22)",
+          "oklch(49.29% 0.0067 95.22)",
+          "oklch(60.71% 0.0067 95.22)",
+          "oklch(72.14% 0.0067 95.22)",
+          "oklch(83.57% 0.0044 95.22)",
+          "oklch(95.00% 0.0013 95.22)"
+        ]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "暗色正文暖白",
+        "tonalRamp": [
+          "oklch(15.00% 0.0011 106.45)",
+          "oklch(26.43% 0.0020 106.45)",
+          "oklch(37.86% 0.0026 106.45)",
+          "oklch(49.29% 0.0026 106.45)",
+          "oklch(60.71% 0.0026 106.45)",
+          "oklch(72.14% 0.0026 106.45)",
+          "oklch(83.57% 0.0017 106.45)",
+          "oklch(95.00% 0.0005 106.45)"
+        ]
+      },
+      "text-secondary-dark": {
+        "role": "neutral",
+        "displayName": "暗色次文字灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0065 102.51)",
+          "oklch(26.43% 0.0115 102.51)",
+          "oklch(37.86% 0.0152 102.51)",
+          "oklch(49.29% 0.0152 102.51)",
+          "oklch(60.71% 0.0152 102.51)",
+          "oklch(72.14% 0.0152 102.51)",
+          "oklch(83.57% 0.0100 102.51)",
+          "oklch(95.00% 0.0030 102.51)"
+        ]
+      },
+      "text-muted-dark": {
+        "role": "neutral",
+        "displayName": "暗色辅助文字灰",
+        "tonalRamp": [
+          "oklch(15.00% 0.0051 95.23)",
+          "oklch(26.43% 0.0089 95.23)",
+          "oklch(37.86% 0.0118 95.23)",
+          "oklch(49.29% 0.0118 95.23)",
+          "oklch(60.71% 0.0118 95.23)",
+          "oklch(72.14% 0.0118 95.23)",
+          "oklch(83.57% 0.0078 95.23)",
+          "oklch(95.00% 0.0024 95.23)"
+        ]
+      },
+      "soft-dark": {
+        "role": "neutral",
+        "displayName": "暗色轻度覆盖",
+        "tonalRamp": [
+          "oklch(15.00% 0.0011 106.45)",
+          "oklch(26.43% 0.0020 106.45)",
+          "oklch(37.86% 0.0026 106.45)",
+          "oklch(49.29% 0.0026 106.45)",
+          "oklch(60.71% 0.0026 106.45)",
+          "oklch(72.14% 0.0026 106.45)",
+          "oklch(83.57% 0.0017 106.45)",
+          "oklch(95.00% 0.0005 106.45)"
+        ]
+      },
+      "selection": {
+        "role": "neutral",
+        "displayName": "浅陶土选区",
+        "tonalRamp": [
+          "oklch(15.00% 0.0126 41.73)",
+          "oklch(26.43% 0.0223 41.73)",
+          "oklch(37.86% 0.0295 41.73)",
+          "oklch(49.29% 0.0295 41.73)",
+          "oklch(60.71% 0.0295 41.73)",
+          "oklch(72.14% 0.0295 41.73)",
+          "oklch(83.57% 0.0194 41.73)",
+          "oklch(95.00% 0.0059 41.73)"
+        ]
+      },
+      "selection-dark": {
+        "role": "neutral",
+        "displayName": "深陶土选区",
+        "tonalRamp": [
+          "oklch(15.00% 0.0210 38.10)",
+          "oklch(26.43% 0.0370 38.10)",
+          "oklch(37.86% 0.0490 38.10)",
+          "oklch(49.29% 0.0490 38.10)",
+          "oklch(60.71% 0.0490 38.10)",
+          "oklch(72.14% 0.0490 38.10)",
+          "oklch(83.57% 0.0322 38.10)",
+          "oklch(95.00% 0.0098 38.10)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "首页标题",
+        "purpose": "首页大屏标题，中小屏变化见 DESIGN.md。"
+      },
+      "headline": {
+        "displayName": "章节标题",
+        "purpose": "正文一级标题。"
+      },
+      "title": {
+        "displayName": "二级标题",
+        "purpose": "章节二级标题。"
+      },
+      "subheading": {
+        "displayName": "三级标题",
+        "purpose": "章节三级标题。"
+      },
+      "body": {
+        "displayName": "正文",
+        "purpose": "中文技术正文与说明。"
+      },
+      "label": {
+        "displayName": "标签",
+        "purpose": "侧栏、摘要与辅助说明。"
+      },
+      "button": {
+        "displayName": "中号按钮",
+        "purpose": "默认主题实际生效的按钮排版。"
+      },
+      "mono": {
+        "displayName": "代码",
+        "purpose": "代码块等宽排版。"
+      },
+      "table-cell": {
+        "displayName": "表格单元格",
+        "purpose": "默认主题实际生效的单元格排版。"
+      },
+      "caption": {
+        "displayName": "说明文字",
+        "purpose": "更新提示等常规字重的辅助说明。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "flat",
+        "value": "none",
+        "purpose": "正文卡片、表格、代码块与分页。"
+      },
+      {
+        "name": "popup",
+        "value": "0 8px 30px rgba(19, 19, 19, 0.1)",
+        "purpose": "菜单与搜索弹层。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "quiet-state",
+        "value": "120ms ease",
+        "purpose": "侧栏文字与功能卡片的颜色、背景和边框过渡。"
+      },
+      {
+        "name": "button-state",
+        "value": "250ms ease",
+        "purpose": "按钮常规状态过渡。"
+      },
+      {
+        "name": "button-active",
+        "value": "100ms ease",
+        "purpose": "按钮按下状态过渡。"
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "减少动态效果时降低动画与过渡时间，并关闭平滑滚动。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "home-medium",
+        "value": "640px"
+      },
+      {
+        "name": "home-grid",
+        "value": "768px"
+      },
+      {
+        "name": "fixed-sidebar",
+        "value": "960px"
+      },
+      {
+        "name": "full-navigation-and-document-outline",
+        "value": "1280px"
+      },
+      {
+        "name": "wide-layout",
+        "value": "1440px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "主按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "现有中号主按钮；通过项目变量响应浅色、深色与按下状态。",
+      "html": "<button type=\"button\" class=\"ds-button-primary\">阅读 Go 指南</button>",
+      "css": ".ds-button-primary{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;display:inline-block;border:1px solid var(--vp-button-brand-border,#b45335);border-radius:20px;padding:0 20px;font-size:14px;font-weight:600;line-height:38px;white-space:nowrap;cursor:pointer;color:var(--vp-button-brand-text,#fff);background:var(--vp-button-brand-bg,#b45335);transition:color 0.25s,border-color 0.25s,background-color 0.25s;}.ds-button-primary:hover{color:var(--vp-button-brand-hover-text,#fff);background:var(--vp-button-brand-hover-bg,#ae5133);border-color:var(--vp-button-brand-hover-border,#ae5133);}.ds-button-primary:active{color:var(--vp-button-brand-active-text,#fff);background:var(--vp-button-brand-active-bg,#9d482d);border-color:var(--vp-button-brand-active-border,#9d482d);transition-duration:0.1s;}.ds-button-primary:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "备用按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "代码中已定义的备用按钮；当前首页未使用。",
+      "html": "<button type=\"button\" class=\"ds-button-secondary\">返回目录</button>",
+      "css": ".ds-button-secondary{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;display:inline-block;border:1px solid var(--vp-c-divider,#e2e1dc);border-radius:20px;padding:0 20px;font-size:14px;font-weight:600;line-height:38px;cursor:pointer;background:var(--vp-c-bg-elv,#fff);color:var(--vp-c-text-1,#131313);transition:color 0.25s,border-color 0.25s,background-color 0.25s;}.ds-button-secondary:hover{border-color:var(--vp-c-border,#cbc9c2);background:var(--vp-c-bg-soft,#f3f3f0);}.ds-button-secondary:active{border-color:var(--vp-button-alt-active-border,transparent);background:var(--vp-button-alt-active-bg,#e2e1dc);color:var(--vp-button-alt-active-text,#131313);transition-duration:0.1s;}.ds-button-secondary:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "功能卡片",
+      "kind": "card",
+      "refersTo": "feature-card",
+      "description": "抽取现有卡片的容器、标题和说明；预览未内嵌平台 emoji。",
+      "html": "<article class=\"ds-feature-card\"><h3 class=\"ds-feature-title\">沿主线理解</h3><p class=\"ds-feature-description\">每章先交代核心问题，再逐步展开概念、规则、边界和常见误区。</p></article>",
+      "css": ".ds-feature-card{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;border:1px solid var(--vp-c-divider,#e2e1dc);border-radius:8px;padding:24px;background:var(--vp-c-bg-elv,#fff);color:var(--vp-c-text-1,#131313);box-shadow:none;transition:border-color 120ms ease,background-color 120ms ease;}.ds-feature-card:hover{border-color:var(--vp-c-border,#cbc9c2);background:var(--claude-surface,#fcfcfb);}.ds-feature-title{margin:0;font-size:16px;line-height:24px;font-weight:600;}.ds-feature-description{margin:8px 0 0;color:var(--vp-c-text-2,#52514e);font-size:14px;font-weight:500;line-height:1.5;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "本地搜索栏",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "搜索外框与实际输入区域；焦点通过外框和可见轮廓表达。",
+      "html": "<label class=\"ds-search-bar\"><svg class=\"ds-search-icon\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 20 20\" width=\"18\" height=\"18\" aria-hidden=\"true\"><path fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"m14.386 14.386 4.088 4.088-4.088-4.088A7.533 7.533 0 1 1 3.733 3.733a7.533 7.533 0 0 1 10.653 10.653z\"/></svg><input class=\"ds-search-input\" type=\"search\" aria-label=\"搜索文档\" value=\"零值\"></label>",
+      "css": ".ds-search-bar{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;display:flex;align-items:center;max-width:100%;padding:0 12px;border:1px solid var(--vp-c-divider,#e2e1dc);border-radius:4px;color:var(--vp-c-text-1,#131313);cursor:text;}.ds-search-bar:focus-within{border-color:var(--vp-c-brand-1,#184f95);}.ds-search-icon{flex:none;margin:8px;}.ds-search-input{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;min-width:0;width:100%;border:0;border-radius:0;padding:6px 12px;font-size:16px;line-height:24px;color:var(--vp-c-text-1,#131313);background:var(--vp-c-bg-soft,#f3f3f0);}.ds-search-input:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(max-width:767px){.ds-search-bar{padding:0 8px;}.ds-search-icon{display:none;}.ds-search-input{padding:6px 4px;}}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "章节导航",
+      "kind": "nav",
+      "refersTo": "nav-active",
+      "description": "现有侧栏的普通项目、当前章节与悬停层次。",
+      "html": "<nav class=\"ds-chapter-nav\" aria-label=\"章节\"><a class=\"ds-chapter-link\" href=\"#chapter-01\">第 1 章 设置 Go 环境</a><a class=\"ds-chapter-link ds-chapter-active\" href=\"#chapter-02\" aria-current=\"page\">第 2 章 基础类型和变量声明</a></nav>",
+      "css": ".ds-chapter-nav{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;padding:8px;background:var(--claude-surface,#fcfcfb);}.ds-chapter-link{display:block;padding:4px 8px;border-radius:6px;color:var(--vp-c-text-2,#52514e);font-size:14px;font-weight:500;line-height:20px;text-decoration:none;transition:color 120ms ease,background-color 120ms ease;}.ds-chapter-active{color:var(--vp-c-text-1,#131313);background:var(--claude-muted-strong,#f0efec);}.ds-chapter-link:hover{color:var(--vp-c-text-1,#131313);background:var(--vp-c-default-soft,rgba(19,19,19,0.05));}.ds-chapter-link:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "折叠参考答案",
+      "kind": "custom",
+      "refersTo": "answer-details",
+      "description": "保留原生 details/summary 交互；默认收起，展开后显示摘要分隔线。",
+      "html": "<details class=\"ds-answer\"><summary class=\"ds-answer-summary\">查看参考答案</summary><p class=\"ds-answer-body\">变量未显式初始化时，具有所属类型的零值。</p></details>",
+      "css": ".ds-answer{font-family:var(--claude-ui-font,'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif);letter-spacing:0;margin:0;border:1px solid var(--vp-c-divider,#e2e1dc);border-radius:8px;padding:0 14px;background:var(--vp-c-bg-soft,#f3f3f0);color:var(--vp-c-text-1,#131313);}.ds-answer-summary{display:list-item;margin:0 -14px;padding:11px 14px;font-size:14px;line-height:20px;font-weight:500;cursor:pointer;}.ds-answer-summary:hover{color:var(--vp-c-text-1,#131313);}.ds-answer[open]>.ds-answer-summary{border-bottom:1px solid var(--vp-c-divider,#e2e1dc);}.ds-answer-body{margin:14px 0;font-size:16px;font-weight:400;line-height:1.5;}.ds-answer-summary:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "代码容器",
+      "kind": "custom",
+      "refersTo": "code-block",
+      "description": "展示现有代码容器与等宽排版；语法高亮、语言标签与复制控件由真实站点的 VitePress 组件提供。",
+      "html": "<div class=\"ds-code-container\"><pre class=\"ds-code-pre\" tabindex=\"0\" aria-label=\"Go 代码示例\"><code class=\"ds-code-text\">var count int\nfmt.Println(count)</code></pre></div>",
+      "css": ".ds-code-container{border:0.5px solid var(--vp-code-block-divider-color,#e2e1dc);border-radius:8px;overflow-x:auto;background:var(--vp-code-block-bg,#f3f3f0);box-shadow:none;}.ds-code-pre{font-family:var(--claude-mono-font,'JetBrains Mono',Consolas,monospace);margin:0;padding:14px;font-size:14px;font-weight:400;line-height:1.625;color:var(--vp-code-block-color,#131313);}.ds-code-text{font-family:var(--claude-mono-font,'JetBrains Mono',Consolas,monospace);color:inherit;font-size:inherit;font-weight:400;line-height:inherit;}.ds-code-pre:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:2px;}@media(prefers-reduced-motion:reduce){:host *,:host *::before,:host *::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important;}}"
+    },
+    {
+      "name": "专题内容状态",
+      "kind": "card",
+      "refersTo": "topic-status",
+      "description": "首页区分可阅读专题和待整理专题；预览为当前内容示例，站点按内容文件自动生成数量与最新章节链接。",
+      "html": "<section class=\"ds-topic-status\" aria-label=\"专题内容状态\"><div><h2>可阅读的专题</h2><p><a class=\"ds-topic-name\" href=\"/books/go-guide/\">Go 语言</a><span>已发布 5 章</span></p><p>最新章节：<a href=\"/books/go-guide/chapter-05\">第 5 章 函数</a></p></div><div><h2>待整理的专题</h2><p>暂未发布章节，以下入口可查看整理规划。</p><p><a href=\"/books/mysql/\">MySQL</a> · <a href=\"/books/network/\">图解网络</a></p></div></section>",
+      "css": ".ds-topic-status{font-family:var(--claude-ui-font,system-ui,sans-serif);display:grid;gap:24px 48px;border-block:1px solid var(--vp-c-divider,#e2e1dc);padding:24px 0;color:var(--vp-c-text-2,#52514e);font-size:14px;line-height:1.5}.ds-topic-status h2{margin:0 0 12px;color:var(--vp-c-text-1,#131313);font-size:16px;font-weight:600}.ds-topic-status p{margin:8px 0 0}.ds-topic-status span{margin-left:16px}.ds-topic-status a{color:var(--claude-link,#184f95);text-decoration:none;text-underline-offset:3px}.ds-topic-status a:hover{text-decoration:underline}.ds-topic-status a:focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:-2px}.ds-topic-name{font-size:18px;font-weight:600}@media(min-width:960px){.ds-topic-status{grid-template-columns:1fr 1fr}}"
+    },
+    {
+      "name": "分层目录",
+      "kind": "navigation",
+      "refersTo": "chapter-outline",
+      "description": "桌面目录默认显示二级标题，当前节自动展开三级标题，可手动收起；预览用原生折叠模拟展开，长题名自然换行。手机目录只显示二级标题。",
+      "html": "<nav class=\"ds-outline\" aria-label=\"本页目录\"><h2>目录</h2><a href=\"#本章要点\">本章要点</a><details open><summary>3.2 切片：可变长度的视图</summary><ul><li><a href=\"#ch3-2-4\" aria-current=\"location\">3.2.4 copy 与 clear</a></li><li><a href=\"#ch3-2-5\">3.2.5 切片比较</a></li></ul></details><a href=\"#ch3-exercises\">练习</a><a href=\"#ch3-interview\">面试题</a><a href=\"#参考资料\">参考资料</a></nav>",
+      "css": ".ds-outline{font-family:var(--claude-ui-font,system-ui,sans-serif);max-width:224px;color:var(--vp-c-text-2,#52514e);font-size:13px;line-height:1.5}.ds-outline h2{margin:0 0 12px;color:var(--vp-c-text-1,#131313);font-size:13px;font-weight:600}.ds-outline a{display:block;padding:6px 8px;color:var(--vp-c-text-2,#52514e);text-decoration:none;overflow-wrap:anywhere}.ds-outline summary{padding:6px 8px;color:var(--claude-link,#184f95);background:var(--vp-c-bg-soft,#f3f3f0);cursor:pointer}.ds-outline ul{margin:4px 0 8px 8px;border-left:1px solid var(--vp-c-divider,#e2e1dc);padding-left:8px;list-style:none}.ds-outline a[aria-current]{color:var(--claude-link,#184f95);font-weight:600}.ds-outline a:hover{color:var(--claude-link,#184f95)}.ds-outline :is(a,summary):focus-visible{outline:2px solid var(--claude-link,#184f95);outline-offset:-2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "个人技术书架",
+    "overview": "把界面看作一处可以长期积累、分类和回看技术知识的个人书架。整体气质为安静、温暖、清晰：浅色采用接近纸张的暖白底色，深色采用带暖调的炭灰；正文与导航保持明确分工，装饰退居内容之后。名称与气质由用户确认，用来描述并延续现有系统。\n\n组件轻巧而明确，优先易用。圆角、细边框、底色变化和文字层级构成主要视觉语言；正文容器保持平面，菜单与搜索弹层通过阴影形成临时层次。中英文技术内容共用无衬线排版，命令与代码以等宽字体区分。\n\n记录依据为 `docs/.vitepress/theme/custom.css`、`docs/.vitepress/config.mts`、当前安装的 VitePress 1.6.4 默认主题，以及 2026 年 10 月 29 日的浏览器核对。已查看首页、章节页、搜索和答案折叠，采样尺寸为桌面（1280 × 720）及手机（390 × 844），并核对桌面深色阅读与搜索效果。分层目录与专题状态调整另核对了 768px、1024px、1440px 和 1920px 视口。这里只记录现有视觉规则；产品背景见 `PRODUCT.md`，章节写作规范见 `AGENTS.md`。",
+    "keyCharacteristics": [
+      "暖白与炭灰成对构成阅读底色。",
+      "陶土橙承担身份与主操作，墨蓝承担链接与定位。",
+      "无衬线中文正文与等宽代码形成清晰分工。",
+      "内容平面，弹层浮起。",
+      "组件轻巧而明确，优先易用。"
+    ],
+    "rules": [
+      {
+        "name": "The Color Roles Rule",
+        "body": "陶土橙强调身份与主操作，墨蓝表达链接和定位，代码红区分行内代码；新增同类元素继续沿用这些角色。",
+        "section": "colors"
+      },
+      {
+        "name": "The Reading Type Rule",
+        "body": "正文与标题保持同一中文无衬线体系；代码用等宽字体区分，不将正文整体换成等宽字体。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Content Rule",
+        "body": "内容容器用边框与底色区分；阴影保留给现有弹层语义。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** 同时沿用浅色与暗色的语义颜色角色，并使用现有 CSS 变量连接组件样式。",
+      "**Do** 保留正文、标题、标签和代码之间的字体与字号分工。",
+      "**Do** 为卡片、表格和代码保留平面层次，为菜单和搜索保留弹层层次。",
+      "**Do** 保留按钮胶囊、容器圆角与搜索栏小圆角之间的已有区别。",
+      "**Do** 在桌面和手机核对实际层叠结果，尤其注意默认主题的作用域样式。",
+      "**Do** 为键盘操作保留可见焦点，并遵循系统减少动态效果的偏好。"
+    ],
+    "donts": [
+      "**Don't** 用统一圆角替代按钮、搜索结果和内容容器各自的轮廓。",
+      "**Don't** 为普通内容卡片、表格和代码块添加投影或悬停位移。",
+      "**Don't** 用品牌强调色替代正文链接、行内代码和语法高亮各自的语义角色。",
+      "**Don't** 把容器宽度上限、全局声明或某次字体加载结果当作所有设备的实际渲染值。",
+      "**Don't** 将当前首页的三列卡片布局推广成所有页面必须遵循的结构。"
+    ]
+  }
+}
