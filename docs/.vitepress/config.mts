@@ -12,6 +12,15 @@ const goGuideChapters = [
   { text: '第 5 章 函数', link: '/books/go-guide/chapter-05' },
   { text: '第 6 章 指针', link: '/books/go-guide/chapter-06' },
   { text: '第 7 章 类型、方法和接口', link: '/books/go-guide/chapter-07' },
+  { text: '第 8 章 泛型', link: '/books/go-guide/chapter-08' },
+  { text: '第 9 章 错误处理', link: '/books/go-guide/chapter-09' },
+  { text: '第 10 章 模块、包和导入', link: '/books/go-guide/chapter-10' },
+  { text: '第 11 章 Go 工具集', link: '/books/go-guide/chapter-11' },
+  { text: '第 12 章 Go 中的并发性', link: '/books/go-guide/chapter-12' },
+  { text: '第 13 章 标准库', link: '/books/go-guide/chapter-13' },
+  { text: '第 14 章 context', link: '/books/go-guide/chapter-14' },
+  { text: '第 15 章 编写测试', link: '/books/go-guide/chapter-15' },
+  { text: '第 16 章 恶龙禁区：反射、unsafe 和 cgo', link: '/books/go-guide/chapter-16' },
 ]
 
 function tokenizeSearchText(text: string): string[] {
