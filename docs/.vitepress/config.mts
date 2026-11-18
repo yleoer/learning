@@ -151,6 +151,39 @@ const redisSidebar = [
   },
 ]
 
+const architectureSidebar = [
+  {
+    text: '凤凰架构：分布式与云原生系统',
+    items: [
+      { text: '导读与速查索引', link: '/books/architecture/' },
+    ],
+  },
+  {
+    text: '一、架构演进、通信契约与数据一致性',
+    items: [
+      { text: '第 1 章 架构演进史、微服务边界与模块化单体方法论', link: '/books/architecture/chapter-01' },
+      { text: '第 2 章 远程服务调用（RPC）与 REST / GraphQL 契约设计', link: '/books/architecture/chapter-02' },
+      { text: '第 3 章 分布式事务（2PC / TCC / SAGA）与共识算法（Paxos / Raft）', link: '/books/architecture/chapter-03' },
+    ],
+  },
+  {
+    text: '二、多级分流、流量治理、安全与可观测性',
+    items: [
+      { text: '第 4 章 透明多级分流：HTTP/3、CDN、四七层均衡与多级缓存', link: '/books/architecture/chapter-04' },
+      { text: '第 5 章 服务发现、网关路由、容错隔离与自适应限流', link: '/books/architecture/chapter-05' },
+      { text: '第 6 章 认证授权（OAuth 2.1）、传输密码学（TLS 1.3）与零信任架构', link: '/books/architecture/chapter-06' },
+      { text: '第 7 章 可观测性体系：OpenTelemetry、日志、链路追踪与聚合度量', link: '/books/architecture/chapter-07' },
+    ],
+  },
+  {
+    text: '三、云原生不可变基础设施与服务网格',
+    items: [
+      { text: '第 8 章 容器隔离原语（cgroups v2）、CRI 运行时与 Kubernetes 调度模型', link: '/books/architecture/chapter-08' },
+      { text: '第 9 章 容器网络（CNI / eBPF）、持久化存储（CSI）与无边车服务网格', link: '/books/architecture/chapter-09' },
+    ],
+  },
+]
+
 function tokenizeSearchText(text: string): string[] {
   const terms: string[] = []
   const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/u
@@ -235,6 +268,7 @@ export default defineConfig({
       '/books/go-concurrency/': goConcurrencySidebar,
       '/books/mysql/': mysqlSidebar,
       '/books/redis/': redisSidebar,
+      '/books/architecture/': architectureSidebar,
       '/books/': [
         {
           text: '书籍与专题',
