@@ -56,6 +56,35 @@ const goGuideSidebar = [
   },
 ]
 
+const goConcurrencySidebar = [
+  {
+    text: 'Go 语言并发之道',
+    items: [
+      { text: '导读与速查索引', link: '/books/go-concurrency/' },
+    ],
+  },
+  {
+    text: '一、理论基石与进阶原语',
+    items: [
+      { text: '第 1 章 并发缺陷、内存模型与 CSP 建模', link: '/books/go-concurrency/chapter-01' },
+      { text: '第 2 章 进阶同步原语与通道所有权', link: '/books/go-concurrency/chapter-02' },
+    ],
+  },
+  {
+    text: '二、通道编排与系统治理',
+    items: [
+      { text: '第 3 章 词法约束、流水线与通道组合子', link: '/books/go-concurrency/chapter-03' },
+      { text: '第 4 章 大规模并发系统的容错与治理', link: '/books/go-concurrency/chapter-04' },
+    ],
+  },
+  {
+    text: '三、运行时调度与诊断',
+    items: [
+      { text: '第 5 章 GMP 调度器与并发性能诊断', link: '/books/go-concurrency/chapter-05' },
+    ],
+  },
+]
+
 function tokenizeSearchText(text: string): string[] {
   const terms: string[] = []
   const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/u
@@ -137,6 +166,7 @@ export default defineConfig({
     ],
     sidebar: {
       '/books/go-guide/': goGuideSidebar,
+      '/books/go-concurrency/': goConcurrencySidebar,
       '/books/': [
         {
           text: '书籍与专题',
