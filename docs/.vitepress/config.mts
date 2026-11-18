@@ -119,6 +119,38 @@ const mysqlSidebar = [
   },
 ]
 
+const redisSidebar = [
+  {
+    text: 'Redis 核心技术与实战',
+    items: [
+      { text: '导读与速查索引', link: '/books/redis/' },
+    ],
+  },
+  {
+    text: '一、核心架构、数据结构与持久化',
+    items: [
+      { text: '第 1 章 体系架构、RESP 协议与事件驱动 I/O 模型', link: '/books/redis/chapter-01' },
+      { text: '第 2 章 底层数据结构、对象编码与扩展数据类型', link: '/books/redis/chapter-02' },
+      { text: '第 3 章 AOF 多文件日志、RDB 快照与混合持久化', link: '/books/redis/chapter-03' },
+    ],
+  },
+  {
+    text: '二、高性能调优、内存治理与高可用集群',
+    items: [
+      { text: '第 4 章 阻塞治理、内存碎片、缓冲区与延迟诊断全景', link: '/books/redis/chapter-04' },
+      { text: '第 5 章 主从复制、哨兵高可用与脑裂防护', link: '/books/redis/chapter-05' },
+      { text: '第 6 章 切片集群（Redis Cluster）、数据倾斜与大容量演进', link: '/books/redis/chapter-06' },
+    ],
+  },
+  {
+    text: '三、缓存架构、并发控制与场景实战',
+    items: [
+      { text: '第 7 章 缓存读写模式、淘汰算法（LRU / LFU）与异常治理', link: '/books/redis/chapter-07' },
+      { text: '第 8 章 原子操作、分布式锁、事务 ACID 与高并发秒杀实战', link: '/books/redis/chapter-08' },
+    ],
+  },
+]
+
 function tokenizeSearchText(text: string): string[] {
   const terms: string[] = []
   const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/u
@@ -202,6 +234,7 @@ export default defineConfig({
       '/books/go-guide/': goGuideSidebar,
       '/books/go-concurrency/': goConcurrencySidebar,
       '/books/mysql/': mysqlSidebar,
+      '/books/redis/': redisSidebar,
       '/books/': [
         {
           text: '书籍与专题',
