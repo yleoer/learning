@@ -85,6 +85,40 @@ const goConcurrencySidebar = [
   },
 ]
 
+const mysqlSidebar = [
+  {
+    text: 'MySQL 是怎样运行的',
+    items: [
+      { text: '导读与速查索引', link: '/books/mysql/' },
+    ],
+  },
+  {
+    text: '一、架构、存储与缓冲管理',
+    items: [
+      { text: '第 1 章 体系架构、配置变量与字符集链路', link: '/books/mysql/chapter-01' },
+      { text: '第 2 章 InnoDB 行格式与数据页结构', link: '/books/mysql/chapter-02' },
+      { text: '第 3 章 数据目录、表空间与 Buffer Pool', link: '/books/mysql/chapter-03' },
+    ],
+  },
+  {
+    text: '二、索引原理与查询优化',
+    items: [
+      { text: '第 4 章 B+ 树索引原理与高效设计规范', link: '/books/mysql/chapter-04' },
+      { text: '第 5 章 单表访问方法、连接原理与 Hash Join', link: '/books/mysql/chapter-05' },
+      { text: '第 6 章 统计信息、成本模型与查询重写优化', link: '/books/mysql/chapter-06' },
+      { text: '第 7 章 执行计划（EXPLAIN / ANALYZE）与优化追踪', link: '/books/mysql/chapter-07' },
+    ],
+  },
+  {
+    text: '三、事务、日志、MVCC 与锁',
+    items: [
+      { text: '第 8 章 事务机制、Redo 日志与 Undo 日志', link: '/books/mysql/chapter-08' },
+      { text: '第 9 章 事务隔离级别与 MVCC 多版本并发控制', link: '/books/mysql/chapter-09' },
+      { text: '第 10 章 InnoDB 锁机制、加锁规则与死锁诊断', link: '/books/mysql/chapter-10' },
+    ],
+  },
+]
+
 function tokenizeSearchText(text: string): string[] {
   const terms: string[] = []
   const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/u
@@ -167,6 +201,7 @@ export default defineConfig({
     sidebar: {
       '/books/go-guide/': goGuideSidebar,
       '/books/go-concurrency/': goConcurrencySidebar,
+      '/books/mysql/': mysqlSidebar,
       '/books/': [
         {
           text: '书籍与专题',
