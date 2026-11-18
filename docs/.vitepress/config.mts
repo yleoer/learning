@@ -3,24 +3,57 @@ import { topics as books } from './topics'
 
 const siteUrl = 'https://learning.yxuefeng.com'
 
-const goGuideChapters = [
-  { text: '前言', link: '/books/go-guide/' },
-  { text: '第 1 章 设置 Go 环境', link: '/books/go-guide/chapter-01' },
-  { text: '第 2 章 基础类型和变量声明', link: '/books/go-guide/chapter-02' },
-  { text: '第 3 章 复合类型', link: '/books/go-guide/chapter-03' },
-  { text: '第 4 章 代码块、变量隐藏和控制结构', link: '/books/go-guide/chapter-04' },
-  { text: '第 5 章 函数', link: '/books/go-guide/chapter-05' },
-  { text: '第 6 章 指针', link: '/books/go-guide/chapter-06' },
-  { text: '第 7 章 类型、方法和接口', link: '/books/go-guide/chapter-07' },
-  { text: '第 8 章 泛型', link: '/books/go-guide/chapter-08' },
-  { text: '第 9 章 错误处理', link: '/books/go-guide/chapter-09' },
-  { text: '第 10 章 模块、包和导入', link: '/books/go-guide/chapter-10' },
-  { text: '第 11 章 Go 工具集', link: '/books/go-guide/chapter-11' },
-  { text: '第 12 章 Go 中的并发性', link: '/books/go-guide/chapter-12' },
-  { text: '第 13 章 标准库', link: '/books/go-guide/chapter-13' },
-  { text: '第 14 章 context', link: '/books/go-guide/chapter-14' },
-  { text: '第 15 章 编写测试', link: '/books/go-guide/chapter-15' },
-  { text: '第 16 章 恶龙禁区：反射、unsafe 和 cgo', link: '/books/go-guide/chapter-16' },
+const goGuideSidebar = [
+  {
+    text: 'Go 语言学习指南',
+    items: [
+      { text: '导读与速查索引', link: '/books/go-guide/' },
+    ],
+  },
+  {
+    text: '一、上手与基础语法',
+    items: [
+      { text: '第 1 章 环境与快速上手', link: '/books/go-guide/chapter-01' },
+      { text: '第 2 章 基础类型、常量与变量', link: '/books/go-guide/chapter-02' },
+      { text: '第 3 章 数组、切片、映射与结构体', link: '/books/go-guide/chapter-03' },
+      { text: '第 4 章 作用域与控制结构', link: '/books/go-guide/chapter-04' },
+    ],
+  },
+  {
+    text: '二、函数与类型抽象',
+    items: [
+      { text: '第 5 章 函数、闭包与 defer', link: '/books/go-guide/chapter-05' },
+      { text: '第 6 章 指针与值传递', link: '/books/go-guide/chapter-06' },
+      { text: '第 7 章 自定义类型、方法与组合', link: '/books/go-guide/chapter-07' },
+      { text: '第 8 章 接口与解耦设计', link: '/books/go-guide/chapter-08' },
+      { text: '第 9 章 泛型', link: '/books/go-guide/chapter-09' },
+    ],
+  },
+  {
+    text: '三、错误与工程工具',
+    items: [
+      { text: '第 10 章 错误处理与 panic', link: '/books/go-guide/chapter-10' },
+      { text: '第 11 章 模块、包与依赖管理', link: '/books/go-guide/chapter-11' },
+      { text: '第 12 章 构建、生成与静态检查', link: '/books/go-guide/chapter-12' },
+    ],
+  },
+  {
+    text: '四、并发与核心标准库',
+    items: [
+      { text: '第 13 章 Goroutine、通道与同步', link: '/books/go-guide/chapter-13' },
+      { text: '第 14 章 context 取消与超时', link: '/books/go-guide/chapter-14' },
+      { text: '第 15 章 I/O、文件与时间', link: '/books/go-guide/chapter-15' },
+      { text: '第 16 章 JSON、HTTP 与日志', link: '/books/go-guide/chapter-16' },
+    ],
+  },
+  {
+    text: '五、测试、运行时与底层',
+    items: [
+      { text: '第 17 章 测试、模糊测试与基准', link: '/books/go-guide/chapter-17' },
+      { text: '第 18 章 内存、逃逸分析与 GC', link: '/books/go-guide/chapter-18' },
+      { text: '第 19 章 反射、unsafe 与 cgo', link: '/books/go-guide/chapter-19' },
+    ],
+  },
 ]
 
 function tokenizeSearchText(text: string): string[] {
@@ -103,12 +136,7 @@ export default defineConfig({
       ...books,
     ],
     sidebar: {
-      '/books/go-guide/': [
-        {
-          text: 'Go 语言学习指南',
-          items: goGuideChapters,
-        },
-      ],
+      '/books/go-guide/': goGuideSidebar,
       '/books/': [
         {
           text: '书籍与专题',

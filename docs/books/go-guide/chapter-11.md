@@ -1,488 +1,287 @@
 ---
-title: 第 11 章 Go 工具集
-description: 掌握 go run、go install 与 tool 指令、静态检查、漏洞扫描、go:embed、go generate、构建约束及交叉编译。
+title: 第 11 章 模块、包与依赖管理
+description: 掌握仓库、模块与包的组织边界，理解 go.mod 语言版本与工具链切换、MVS 版本选择及多模块协作机制。
 ---
 
-# 第 11 章 Go 工具集
+# 第 11 章 模块、包与依赖管理
 
 ## 本章要点
 
-Go 的工程体验很大一部分来自开箱即用的周边工具链。承接[第 1 章](./chapter-01#ch1-1-3)的 `go build`、`go fmt` 与 `go vet`，本章把日常开发与交付链路上的其余关键拼图补齐：如何用 `go install` 与 Go 1.24 新增的 `go.mod` `tool` 指令管理命令行工具版本，如何接入 `goimports`、`staticcheck`、`revive`、`golangci-lint` 和 `govulncheck` 建立静态质量与漏洞防线，如何用 `//go:embed` 把静态资源打进单文件二进制、用 `go generate` 驱动代码生成、用 `go version -m` 离线审计线上产物，最后掌握交叉编译与 `//go:build` 构建约束的组合规则。
+工程规模超出单文件后，代码组织与依赖治理决定了项目的长期可维护性：如何拆分包才能杜绝循环依赖？如何共享内部逻辑却不对外暴露契约？升级编译器或第三方主版本时如何保障兼容与可复现？本章从仓库、模块、包三层边界入手，系统梳理可见性规则、`internal` 目录、`go.mod` 语言版本与工具链切换、最小版本选择（MVS）及 `/vN` 主版本路径，最后结合 `go.work` 工作区与 `GOPROXY` / `GOPRIVATE` 串起完整协作链路。
 
-> 核对日期：2026 年 11 月 5 日；核对环境为 Go 1.27.1、Windows/AMD64。
+> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Linux/AMD64。
 
-## 11.1 用 `go run` 即刻执行 {#ch11-1}
+## 11.1 仓库、模块与包的组织规则 {#ch11-1}
 
-`go run` 把编译和启动合并成一步：可执行文件生成在系统临时目录，进程退出后自动清理，不会往当前工作区留二进制垃圾，非常适合快速验证一段小实验：
+### 11.1.1 导出可见性、包命名与导入语法 {#ch11-1-1}
 
-```sh
-$ go run .
-```
+Go 源码按三个层级逐级收敛：**仓库（Repository）** 是 Git 版本库，常规项目应坚持“一仓一模块”以简化打标与发版；**模块（Module）** 由根目录 `go.mod` 界定，公开项目须从初始化起采用真实托管地址作为模块路径，不用实验性的 `example.com`，参见[初始化模块](./chapter-01#ch1-2-1)；**包（Package）** 是同一目录下共同编译的一组 `.go` 文件，同目录源文件必须声明相同包名，唯一例外是[黑盒测试包](./chapter-17#ch17-1-2) `xxx_test`。
 
-多文件包务必写 `go run .` 而不是 `go run hello.go`（原因见 [1.2.2 节](./chapter-01#ch1-2-2)）。另外自 Go 1.17 起，`go run` 还支持直接带模块路径与版本号运行远端命令行工具（如 `go run golang.org/x/pkgsite/cmd/pkgsite@latest`），临时跑一次工具连全局安装都省了。正式部署与分发仍应统一使用 `go build`。
+包级访问控制与导入遵循四条核心规则：
 
-## 11.2 安装与固定开发工具 {#ch11-2}
-
-用 Go 写的命令行工具通常直接从源码构建安装，按作用域分“本机全局安装”和“项目级锁定版本”两种方式：
-
-### 11.2.1 用 `go install` 全局安装工具 {#ch11-2-1}
-
-平时跨项目通用的个人命令行工具（如压测工具、文档预览器），直接带 `@latest` 或具体版本号执行 `go install`：
-
-```sh
-$ go install github.com/rakyll/hey@latest
-```
-
-编译出来的可执行文件默认落入 `$GOPATH/bin`（设置了 `GOBIN` 时则落入 `GOBIN`；配置 `PATH` 的方法见 [1.1.1 节](./chapter-01#ch1-1-1)）。需要升级时，换新版本号再跑一遍同一条命令即可覆盖。
-
-这里有个新手高频坑：**安装外部工具时千万别漏写末尾的 `@latest` 或 `@vX.Y.Z`**！带了 `@版本`，`go install` 就会忽略当前目录里的 `go.mod`，独立拉取指定版本构建；一旦漏掉 `@版本`，它就会退回“按当前所在模块的 `go.mod` 依赖表构建”，不在模块目录里会直接报错，在模块目录里又会因为 `go.mod` 没引这个工具而失败。
-
-### 11.2.2 用 `tool` 指令锁定项目工具版本（Go 1.24+） {#ch11-2-2}
-
-如果团队里的代码生成器（如 `stringer`）或检查工具靠每个人自己在机器上跑 `go install ...@latest`，早晚会出现“你装的是 v0.20、CI 装的是 v0.28，生成出来的代码格式对不上”的麻烦。自 **Go 1.24** 起，`go.mod` 原生支持 `tool` 指令，可以把项目用到的开发工具连同精确版本号一起锁进 `go.mod`：
-
-```sh
-$ go get -tool golang.org/x/tools/cmd/stringer@latest
-$ go tool                               # 列出当前 go.mod 已声明的全部工具
-$ go list -m golang.org/x/tools         # 查看锁定的工具所属模块版本
-```
-
-执行 `go get -tool` 后，`go.mod` 里会多出一条 `tool golang.org/x/tools/cmd/stringer` 记录及对应的 `require` 版本；此后团队任何人或 CI 只需运行 `go tool stringer -type=...`，Go 就会自动按 `go.mod` 锁定的版本编译并缓存执行，彻底告别全局版本漂移。
-
-顺带一提，像 `goimports`、`stringer`、`govulncheck`、`pkgsite` 这些路径以 `golang.org/x/...` 开头的包，是由 Go 官方团队维护的扩展仓库：代码质量可靠，但不受标准库那份严格的 Go 1 永久向后兼容承诺约束，会按常规模块节奏迭代版本。
-
-## 11.3 用 `goimports` 整理导入 {#ch11-3}
-
-`goimports` 可以看作 `gofmt` 的超集：除了做一模一样的标准源码格式化，还会顺手按分组（标准库一组、第三方与本模块一组）对 `import` 排序、删掉未使用的导入，并尝试补全漏写的包导入：
-
-```sh
-$ go install golang.org/x/tools/cmd/goimports@latest
-$ goimports -l -w .
-```
-
-`-l` 打印发生变动的文件名，`-w` 直接写回源文件。现代编辑器接入官方语言服务器 `gopls` 后，开启“保存时自动格式化与整理导入（Organize Imports）”底层跑的就是这套逻辑。不过当同名包不止一个（比如 `"text/template"` 与 `"html/template"`、`"math/rand"` 与 `"crypto/rand"`）时，自动补全完记得扫一眼 `import` 块，别让工具猜错了包（尤其别把 HTML 模板猜成不做转义的纯文本模板）。
-
-## 11.4 代码质量静态分析 {#ch11-4}
-
-`go vet` 只抓“十有八九真是 Bug”的一小批高置信度模式；想要进一步统一代码惯例、揪出死代码与漏检错误，通常会叠加第三方静态检查器（Linter）。使用任何 Linter 都要保持清醒：规则越偏风格层面，越可能出现不合当前上下文的误报；真遇到合理例外时，用工具约定的行内注释显式豁免并写半句原因，好过为了迁就机械规则把清晰代码改拧巴。
-
-### 11.4.1 `staticcheck` {#ch11-4-1}
-
-如果整个项目只引入一个外部静态检查工具，首选一定是低误报、高含金量的 [staticcheck](https://staticcheck.dev/)：
-
-```sh
-$ go install honnef.co/go/tools/cmd/staticcheck@latest
-$ staticcheck ./...
-```
-
-它内置了上百条针对常见缺陷、性能浪费、废弃 API 调用与简化写法的检查。比如无意义的格式化调用：
+- **首字母大小写决定可见性**：标识符首字母大写即对包外**导出（Exported）**，成为公开 API 契约；小写或 `_` 开头仅在包内可见，同包不同 `.go` 文件可直接互访未导出成员，无需 `import`。
+- **`import` 路径不等同于调用前缀**：`import` 双引号内填“模块路径 + 子目录路径”，不支持相对路径 `./foo`，且仅作用于当前[文件块](./chapter-04#ch4-1)；但代码中调用的限定前缀由被导入文件首行 `package` 声明决定，而非目录名。除 `package main`、含连字符 `-` 的目录名及 `/v2+` 主版本路径外，应保持目录名与包名完全一致。
+- **包命名简短清晰**：一律使用全小写简短名词，严禁创建 `util`、`common`、`misc` 等职责模糊的大杂烩包；导出符号切勿重复包名，应写 `names.Extract` 而非 `names.ExtractNames`，并尽量避开与常用标准库重名。
+- **按需使用重命名导入与空白导入**：同名包冲突时可在路径左侧指定文件级别名，典型如同时使用标准库 `"crypto/rand"` 与伪随机包 `"math/rand/v2"`（Go 1.22+）；**空白导入** `_ "pkg"` 仅触发目标包初始化而不引入包名；**点导入** `. "pkg"` 会污染当前文件命名空间，日常切勿使用：
 
 ```go
-s := fmt.Sprintf("Hello") // S1039: unnecessary use of fmt.Sprintf
-fmt.Println(s)
-```
-
-再比如 [9.1 节](./chapter-09#ch9-1)提过的“复用同一个 `err` 变量却漏检中间某次赋值”——编译器和 `go vet` 对此双双放行，`staticcheck` 则能精准报出 `SA4006`：
-
-```go
-err := stepOne()
-if err != nil {
-	return err
-}
-err = stepTwo() // SA4006: this value of err is never used（下面忘了判断就退出了）
-fmt.Println("done")
-```
-
-看到不熟悉的规则编号时，随时运行 `staticcheck -explain SA4006` 就能在终端读到完整的触发原因与修复示例。
-
-### 11.4.2 `revive` 与 `golangci-lint` {#ch11-4-2}
-
-- **`revive`**：早年已停更的 `golint` 的现代继任者，侧重检查导出注释缺失、命名规范、`error` 返回值顺序，以及像“局部变量隐藏了预声明标识符 `true`/`len`”（`redefines-builtin-id` 规则）这类可读性隐患。
-- **`golangci-lint`**：把 `govet`、`staticcheck`、`revive`、`ineffassign`、`errcheck` 等几十款分析器打包在一起并发运行的聚合执行器，是绝大多数团队 CI 的标配。配置时务必把 `.golangci.yml` **放进模块根目录随代码一起提交**，别依赖个人机器主目录里的私有配置，否则本地全绿、一推 CI 就满屏红灯。接入存量老项目时建议循序渐进：先开 `govet` + `staticcheck` + `ineffassign`，修干净后再按团队共识挑着开风格类规则。
-
-## 11.5 用 `govulncheck` 扫描依赖漏洞 {#ch11-5}
-
-第三方依赖树里难免爆出已知安全漏洞（CVE）。官方工具 `govulncheck` 对接 [Go 漏洞数据库](https://vuln.go.dev/)，最大的亮点在于它**不只傻比对 `go.mod` 版本号，还会静态分析你的源码调用图**：
-
-```sh
-$ go install golang.org/x/vuln/cmd/govulncheck@latest
-$ govulncheck ./...
-```
-
-如果某个间接依赖的某个冷门函数有漏洞，但你的代码压根没有哪条调用路径能走到那个函数，`govulncheck` 只会把它归入低优先级的参考提示，不会天天狼来了式地阻断构建；只有当你的代码真顺着调用链调到了受影响符号时，它才会明确告警并打印出精确到行号的完整调用链与最低修复版本号，照着提示用 `go get pkg@v修复版` 升级复测即可。日常应将 `govulncheck ./...` 加入 CI 定期任务。
-
-## 11.6 用 `go:embed` 嵌入内容 {#ch11-6}
-
-SQL 迁移脚本、HTML 模板、默认配置或前端静态文件如果还得跟着二进制到处拷目录，部署一不小心就会配错工作路径。自 Go 1.16 起，标准库 `"embed"` 与编译器指令 `//go:embed` 支持在编译期直接把文件打包进可执行文件内部。
-
-### 11.6.1 嵌入单个文件 {#ch11-6-1}
-
-只需要单个文件的内容时，可以直接嵌入到 `string` 或 `[]byte` 变量里：
-
-```go
-package main
-
 import (
-	_ "embed"
-	"fmt"
-	"strings"
+	crand "crypto/rand"
+	"math/rand/v2"
 )
 
-//go:embed version.txt
-var rawVersion string
-
-func main() {
-	fmt.Println(strings.TrimSpace(rawVersion))
+func newSeededRand() *rand.Rand {
+	var seed [32]byte
+	_, _ = crand.Read(seed[:]) // Go 1.24+ 保证填满切片且永不返回非 nil 错误
+	return rand.New(rand.NewChaCha8(seed))
 }
 ```
 
-写 `//go:embed` 必须严格遵守四条编译期规矩：
+### 11.1.2 internal 目录、禁止循环依赖与目录布局 {#ch11-1-2}
 
-1. **当前源文件必须显式导入 `"embed"`**：哪怕变量类型只是 `string` 或 `[]byte`、没直接引用 `embed.FS`，也必须写一行空白导入 `_ "embed"` 激活编译指令；
-2. **指令格式零容错**：必须写成 `//go:embed 模式`，`//` 和 `go:embed` 中间**绝不能有空格**（多了空格就退化成普通注释，变量悄悄保持空零值！），且紧贴在目标变量声明上方；
-3. **只能修饰包级变量**，不能写在函数局部变量上；目标类型只允许是 `string`、`[]byte` 或 `embed.FS`（嵌入 `[]byte` 后也应视作只读数据，不要原地改写）；
-4. **路径相对于当前 `.go` 源文件所在目录解析**，且不允许用 `..` 逃出当前模块目录，也不能穿透子模块边界（内部含独立 `go.mod` 的子目录会被排除）。
+需要在模块内多个包之间共享代码、又不希望外部模块将其当作公开 API 依赖时，可将包放入名为 **`internal`** 的目录。工具链在编译期强制执行路径前缀检查：**`.../a/internal/...` 下的任何包，仅允许导入路径以 `.../a` 开头的包导入**——即 `internal` 的直接父目录 `a` 本身及其所有子孙目录；越界导入会直接报错 `use of internal package ... not allowed`。拿不准是否对外公开的代码应一律先收入 `internal/`。
 
-### 11.6.2 用 `embed.FS` 嵌入目录或多文件 {#ch11-6-2}
+Go 编译器同时**严禁任何直接或间接的包循环依赖**，一旦出现立即报错 `import cycle not allowed`。遇到循环依赖可按三种思路拆解：若两包高度内聚无法独立存在，直接合并为一个包；将双方共用的基础数据结构下沉到底层独立包；或在调用方定义[消费端小接口](./chapter-08#ch8-2-1)切断反向编译依赖。
 
-需要打包一整套目录或多个文件时，把目标变量声明为 `embed.FS`（此时正常导入 `"embed"`，去掉下划线 `_`）。`embed.FS` 实现了标准库 `"io/fs"` 的只读文件系统接口（`fs.FS`、`fs.ReadDirFS`、`fs.ReadFileFS`），不管是遍历目录还是直接配合 `net/http`、`html/template` 使用都无缝衔接：
+模块目录布局无需套用繁琐模板，按项目形态由简入繁即可：
 
-```go
-//go:embed templates
-var templateFS embed.FS
+- **单包库或小工具**：`.go` 源文件直接平铺在模块根目录，不建多余子目录。
+- **业务应用程序**：单一入口放根目录，多可执行程序按 `cmd/<服务名>/main.go` 组织，`main` 仅负责加载配置与组装依赖；其余代码按 `order`、`billing` 等业务领域划入 `internal/`，避免按 `models`、`controllers` 机械分层。
+- **公开第三方库**：核心主包放在仓库根目录便于下游直接导入，配套命令行工具放 `cmd/`，非公开实现放 `internal/`。
 
-data, err := templateFS.ReadFile("templates/welcome.tmpl")
-```
+### 11.1.3 文档注释（go doc）、API 兼容迁移与慎用 init {#ch11-1-3}
 
-注意路径细节：嵌入目录 `templates` 时，**目录名本身会保留在虚拟文件系统的根路径里**，而且虚拟路径分隔符在所有操作系统（包括 Windows！）上一律固定使用正斜杠 **`/`**，所以读取时必须写 `"templates/welcome.tmpl"`（不能用 `filepath.Join` 在 Windows 上拼出反斜杠 `\`，应使用 `"path"` 包或手写 `/`；需要剥掉顶层目录前缀时可用 `fs.Sub(templateFS, "templates")`）。配合 `fs.WalkDir` 遍历写法与普通目录完全一致：
+`go doc` 与 `pkg.go.dev` 直接从紧贴声明上方、**中间无空行**的注释提取文档：包注释以 `// Package <包名>` 开头，篇幅较长时单独放入 `doc.go`；导出声明的注释首句以该标识符自身名字开头。Go 1.19+ 原生支持 `# 小节标题`、`[Symbol]` / `[pkg.Symbol]` 自动跳转以及文末外链定义，本地可通过 `go doc .` 或 `pkgsite` 预览：
 
 ```go
-err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
-	if err != nil {
-		return err
-	}
-	if !d.IsDir() {
-		fmt.Println(path)
-	}
-	return nil
-})
+// Package money provides helpers for currency conversion.
+package money
+
+// Convert converts amount into the currency identified by to.
+// See [ISO4217] for standard three-letter currency codes.
+//
+// [ISO4217]: https://www.iso.org/iso-4217-currency-codes.html
+func Convert(amount int64, to string) (int64, error) { return amount, nil }
 ```
 
-### 11.6.3 匹配规则与隐藏文件 {#ch11-6-3}
+已发布的库若需将导出符号迁移至新子包而不破坏下游编译，函数可保留旧名转发调用并加上 `// Deprecated: use NewFunc instead.` 注释，常量保留同值定义，类型则使用[类型别名](./chapter-07#ch7-1) `type OldName = newpkg.NewName`，使新旧名称指向完全相同的类型；自 Go 1.24 起泛型类型同样支持 `type OldSet[T comparable] = newpkg.Set[T]`。注意包级 `var` 变量与结构体字段不支持别名迁移。
 
-一条 `//go:embed` 后可以用空格并列多个路径或 `path.Match` 通配符（如 `*.sql`，文件名含空格时加双引号）；也可以连续写多行 `//go:embed`。如果某个模式一个文件都没匹配上，或者给 `string`/`[]byte` 变量匹配到了不止一个文件，编译会直接报错。
+包内无参无返回值的 `func init()` 会在包级变量求值完毕后、按依赖自底向上于 `main.main()` 前自动执行。因其无法返回 `error` 且隐式读写全局状态，工程中仅保留两类合理用途：预计算无法单行表达的只读查表数据，或配合标准库约定完成插件注册，例如用 `_ "github.com/jackc/pgx/v5/stdlib"` 向 `"database/sql"` 注册驱动。严禁在 `init` 中连接数据库、发起网络请求、读取外部配置或启动后台 Goroutine。
 
-针对文件名以 `.` 或 `_` 开头的隐藏文件（如前端构建产物里的 `_next/`），`embed` 有三档精细开关：
+## 11.2 go.mod 指令与版本选择 {#ch11-2}
 
-```go
-//go:embed web
-var defaultWeb embed.FS // 默认：递归跳过所有以 . 或 _ 开头的隐藏文件/目录
+### 11.2.1 go 指令、模块级语言版本与工具链切换 {#ch11-2-1}
 
-//go:embed web/*
-var rootHiddenWeb embed.FS // 通配符直接命中 web/ 第一层下的隐藏文件，但子目录内仍跳过隐藏项
+自 Go 1.21 起，`go.mod` 中的 `go` 指令支持 `1.27.4` 这类补丁级版本号，并同时承担两项核心职责：
 
-//go:embed all:web
-var allWeb embed.FS // all: 前缀（Go 1.18+）：递归包含所有层级的隐藏文件（仍自动排除 .git 等）
-```
+1. **模块级独立语言版本语义**：同一依赖图中的每个模块，均严格按**其自身 `go.mod` 声明的 `go` 版本**决定编译期语言语义与实验特性开关。例如主模块声明 `go 1.27.4` 时启用 [Go 1.22+ 循环变量按轮创建](./chapter-04#ch4-3-3)，而所依赖的某旧库声明 `go 1.20` 时仍按单变量复用语义编译——调高主模块的 `go` 版本绝不会静默改变第三方依赖的内部行为。
+2. **构建最低版本门槛与自动工具链切换**：`go` 指令规定构建本模块所需的最低工具链版本，可选的 `toolchain` 指令如 `toolchain go1.27.4` 则给出当前主模块建议使用的工具链版本。实际执行的工具链由环境变量 `GOTOOLCHAIN` 控制：
+   - **默认 `auto` 模式**：当本机安装的 `go` 低于主模块 `go.mod` 或 `go.work` 要求的 `go` / `toolchain` 版本时，`go` 命令会自动下载、校验并缓存对应版本的官方工具链完成构建。
+   - **`GOTOOLCHAIN=local` 离线锁定**：禁止任何自动网络下载，强制仅使用本机现有工具链；若本机版本低于模块 `go` 指令要求则立即报错退出，适合断网内网与需要严格锁定基础镜像版本的 CI 流水线。
+   - **按指定版本回归测试**：运行不带 `+auto` 后缀的 `GOTOOLCHAIN=go1.26.2 go test ./...` 可忽略 `toolchain` 建议值，强制使用指定历史工具链编译测试，前提是模块 `go` 指令要求的最低版本不高于该版本。
 
-## 11.7 用 `go generate` 生成代码 {#ch11-7}
+### 11.2.2 语义化版本、最小版本选择（MVS）与 /vN 主版本路径 {#ch11-2-2}
 
-`go build` 自身绝不会在编译时偷偷跑外部脚本；需要从 `.proto` 协议文件、SQL 语句或枚举定义生成 `.go` 代码时，统一在源码注释里写 `//go:generate 命令`（同样注意 `//` 后无空格），开发阶段手动或由构建脚本显式运行 `go generate ./...` 触发。
+日常通过 `go get pkg@v1.4.0` 升降级依赖、通过 `go mod tidy` 扫描源码校准直接与间接依赖（`// indirect`）。工具链同步生成的 `go.sum` 记录了各模块源码包与 `go.mod` 的加密哈希以防内容篡改，**无论应用还是库模块，`go.mod` 与 `go.sum` 都必须成对提交至版本库**。模块缓存默认位于 `$GOPATH/pkg/mod`，可用 `go clean -modcache` 清理；完全断网的构建环境也可执行 `go mod vendor` 将依赖源码随库固化。
 
-### 11.7.1 两个高频生成器示例 {#ch11-7-1}
+Go 模块采用 `v主版本.次版本.补丁号` 的语义化版本（SemVer）：`v0.x.y` 不做兼容保证；`v1+` 下补丁号修缺陷、次版本号向后兼容加功能、主版本号代表不兼容变更。`@latest` 与 `go get -u` 优先匹配未撤回的正式版，仅在无正式版时回退 `-rc.1` 等预发布版。面对多模块依赖同一底层库 `D` 的不同版本时，Go 采用**最小版本选择（MVS）** 算法：**在满足全图所有 `require` 最低版本要求的集合中选最小版本，即取各方所声明最低版本号的最大值**。例如 A 要求 `D v1.1.0`、B 要求 `D v1.2.0`、C 要求 `D v1.2.3`，即使远端已发布 `D v1.5.0`，MVS 仍确定性地选定 **`v1.2.3`**，使构建结果不随时间漂移。
 
-最常见的一类是从跨语言的 Protocol Buffers 描述文件生成结构体与序列化代码：
+当模块包含破坏性变更升至 **`v2` 及更高主版本**时，语义导入版本控制规定：**`go.mod` 的 `module` 路径与所有源码 `import` 路径末尾必须显式添加 `/v2`、`/v3` 后缀**，`v0` 与 `v1` 不加后缀。由于导入路径不同，`.../simpletax` 与 `.../simpletax/v2` 可在同一进程内并存，支持大型工程渐进式迁移。发布开源模块无需向中心平台上传压缩包，备好 `LICENSE`、`go.mod` 与 `go.sum` 后，向公开 Git 仓库推送 `v1.0.0` 等带 `v` 前缀的标签即告完成；主版本升级则须先修改 `/v2` 路径再推送 `v2.0.0` 标签。
 
-```go
-//go:generate protoc -I=. --go_out=. person.proto
-```
+### 11.2.3 go.mod 指令速查（require / replace / exclude / retract） {#ch11-2-3}
 
-另一类是给 [7.3.1 节](./chapter-07#ch7-3-1)讲过的 `iota` 枚举自动生成 `String() string` 方法的官方工具 `stringer`（在 Go 1.24+ 模块中配合 `tool` 指令锁版本最稳妥）：
+`go.mod` 全部核心指令的作用与生效边界对比如下：
 
-```go
-type Direction int
+| 指令 | 语法示例 | 核心作用 | 生效范围 |
+| --- | --- | --- | --- |
+| `module` | `module example.com/lib/v2` | 声明模块根路径与包导入前缀 | 全局生效，决定模块唯一身份 |
+| `go` | `go 1.27.4` | 设定本模块语言版本语义及最低工具链要求（Go 1.21+） | 语言语义按各模块独立生效；构建门槛取全图最高值 |
+| `toolchain` | `toolchain go1.27.4` | 声明构建当前模块建议的工具链版本（Go 1.21+） | **仅当前模块作为主模块时生效** |
+| `require` | `require pkg v1.3.1` | 声明直接依赖或传递依赖（`// indirect`）的最低版本 | 参与整个依赖图的 MVS 版本计算 |
+| `replace` | `replace old => new v1.0.0` | 将依赖重定向至替代 fork 版本或本地目录 `../dir` | **仅作为主模块时生效**；切勿提交本地相对路径 |
+| `exclude` | `exclude pkg v1.2.0` | 屏蔽第三方依赖的特定坏版本，令 MVS 向高版本顺延 | **仅作为主模块时生效** |
+| `retract` | `retract [v1.7.0, v1.7.2]` | 模块作者撤回自己发布过的缺陷版本（Go 1.16+） | 全网生效：`@latest` 与 `go get -u` 自动跳过并告警 |
+| `tool` | `tool golang.org/x/tools/cmd/stringer` | 登记项目级开发工具可执行包（Go 1.24+），见 [12.1.1 节](./chapter-12#ch12-1-1) | 工具入口归属当前模块，版本锁定于 `require` |
+| `godebug` | `godebug panicnil=1` | 覆盖构建二进制时的运行期默认 `GODEBUG` 开关（Go 1.23+） | **仅编译当前主模块的 `main` 包时生效** |
 
-const (
-	_ Direction = iota
-	North
-	South
-	East
-	West
-)
+注意区分三类治理指令的方向：**`replace`**（改道替代源）与 **`exclude`**（拒用他人坏版本）在当前模块被他人当作依赖引用时会被自动忽略；**`retract`**（召回自身坏版本）则需上游作者在新版 `go.mod` 中声明并推送更高版本标签（如 `v1.7.3`）以通知模块代理生效。
 
-//go:generate go tool stringer -type=Direction
-```
+## 11.3 本地多模块工作区与模块代理 {#ch11-3}
 
-运行 `go generate ./...` 后，同目录下会自动产出 `direction_string.go`，调用 `North.String()` 即返回 `"North"`，以后增删枚举常量只需重跑一次生成即可。
+### 11.3.1 go.work 工作区协作 {#ch11-3-1}
 
-### 11.7.2 与版本控制和 CI 的配合 {#ch11-7-2}
-
-用 `go generate` 记住一条省心准则：**把生成出来的 `.go` 文件一并提交进 Git 仓库**。这样别人 `go get` 你的模块或阅读源码时，不需要先在自己电脑上折腾一整套 `protoc` 就能直接编译、跳转定义。为了防止有人改了原定义却忘了重跑 `go generate`，可以在 CI 里跑一遍 `go generate ./... && git diff --exit-code`，一旦发现工作区有未提交的生成差异就立即报错提醒。
-
-## 11.8 读取二进制内的构建信息 {#ch11-8}
-
-Go 编译出来的每个二进制文件内部都自动嵌了一份完整的构建清单，用 `go version -m <二进制路径>` 离线一扫便知：
-
-```text
-$ go version -m ./bin/app
-./bin/app: go1.27.1
-	path	example.com/app/cmd/app
-	mod	example.com/app	v1.2.0
-	dep	golang.org/x/text	v0.22.0	h1:...
-	build	-buildmode=exe
-	build	-compiler=gc
-	build	CGO_ENABLED=0
-	build	GOOS=linux
-	build	GOARCH=amd64
-	build	vcs=git
-	build	vcs.revision=623a65b94fd02ea6f18df53afaaea3510cd1e611
-	build	vcs.modified=false
-```
-
-到了线上应急排查时，这项能力非常救命：突然听说某个库爆出高危漏洞，直接拿着生产容器里的二进制跑 `govulncheck -mode=binary ./bin/app`（或 `go version -m`），不用翻构建日志就能确认这台实例到底是用哪个 Git 提交、哪版 Go、哪版依赖编出来的。如果写自研工具解析这份元数据，注意区分标准库里的两个包：**从磁盘读取任意外部二进制文件用 `"debug/buildinfo"`（`buildinfo.ReadFile`）；进程在运行期读取自身构建信息则用 `"runtime/debug"`（`debug.ReadBuildInfo`）**。
-
-## 11.9 交叉编译、构建标签与多版本测试 {#ch11-9}
-
-### 11.9.1 交叉编译 {#ch11-9-1}
-
-在不依赖 Cgo（纯 Go 代码，或显式设 `CGO_ENABLED=0`）的前提下，一台机器就能直接编译出其他操作系统和 CPU 架构的原生可执行文件，只需在 `go build` 前指定 `GOOS` 与 `GOARCH`（合法平台组合可通过 `go tool dist list` 查看）：
+同时修改底层库 `lib` 与上层应用 `app` 时，无需在 `app/go.mod` 中添加易误提交的本地路径 `replace`，可在两者的公共父目录启用 **Go 工作区**（Go 1.18+）：
 
 ```sh
-$ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/app-linux-amd64 .
-$ CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -o bin/app-win-arm64.exe .
+$ go work init ./app
+$ go work use ./lib
 ```
 
-在原生 Windows PowerShell 中对应写法为：
+生成的 `go.work` 会将所列模块并入同一张顶层依赖图，使 `app` 直接引用本地未提交的 `lib` 最新源码。日常使用须遵守**工作区协作三原则**：
 
-```powershell
-$env:CGO_ENABLED = "0"; $env:GOOS = "linux"; $env:GOARCH = "amd64"
-go build -o bin/app-linux-amd64 .
-Remove-Item Env:CGO_ENABLED, Env:GOOS, Env:GOARCH
-```
+1. **将 `go.work` 与 `go.work.sum` 写入 `.gitignore`**，切勿提交到普通单模块或库仓库；
+2. 提交代码前运行 `GOWORK=off go test ./...`，确保脱离本地工作区后仅凭 `go.mod` 仍能独立通过构建；
+3. 联调定型后**自底向上发版**：先提交 `lib` 并推送新版本标签，再回到 `app` 执行 `go get` 更新正式依赖号。
 
-一旦项目启用了 Cgo（见 [16.3 节](./chapter-16#ch16-3)），交叉编译还必须额外准备目标平台的 C 交叉编译器并通过 `CC` 指定。
+### 11.3.2 GOPROXY、GOSUMDB 与私有仓库 GOPRIVATE {#ch11-3-2}
 
-### 11.9.2 文件名后缀与 `//go:build` 构建约束 {#ch11-9-2}
+为消除源代码仓库删库或强推篡改标签的风险，`go` 命令默认启用两道安全防线：
 
-当某个功能在 Windows 和 Linux 下需要调不同的系统 API 实现时，有两种按条件选文件参与编译的机制：
+- **模块代理 `GOPROXY`**：默认值为 `https://proxy.golang.org,direct`，负责永久缓存公开模块各版本的不可变快照以加速拉取并保障可用性。
+- **校验和数据库 `GOSUMDB`**：默认值为 `sum.golang.org`，基于透明日志维护全网公开模块版本的唯一哈希，首次引入新依赖时若哈希与全网记录不符即当场拒绝安装。
 
-1. **平台文件名后缀**：除去 `.go`（及测试文件的 `_test.go`）后，以 `*_GOOS`、`*_GOARCH` 或 **`*_GOOS_GOARCH`** 结尾的文件，只会在对应目标平台下参与编译——注意双后缀顺序固定是**先操作系统、后架构**，例如 `disk_windows.go`、`simd_amd64.go`、`sys_linux_arm64.go`。
-2. **`//go:build` 构建约束（Build Constraint，Go 1.17+ 统一语法）**：写在文件顶部 `package` 声明之前，支持 `&&`、`||`、`!` 和圆括号组合条件。注意两点格式铁律：**`//` 与 `go:build` 之间不能有空格**，且 **`//go:build` 下方与 `package`（或包文档注释）之间应留出一个空行**，以免被当成包文档注释处理：
-
-```go
-//go:build (linux && amd64) || (darwin && !cgo)
-
-package sysinfo
-```
-
-除了具体 `GOOS` 和 `GOARCH` 名字，常用的内置标签还有 `unix`（匹配所有类 Unix 系统）、`cgo`（开启 Cgo 时为真）以及 Go 主版本号标签（如 `go1.26`，工具链不低于 Go 1.26 时满足；且在 `go 1.21+` 模块中，单文件写上更高版本标签还会把该文件的编译语言版本提升到对应版本）。
-
-如果一个文件**同时用了平台文件名后缀和 `//go:build` 注释，两边是“逻辑与（AND）”关系，必须同时满足才会编译**。标准库里经常利用这一点：比如 `GOOS=ios` 在构建规则里也会默认匹配 `_darwin.go` 文件，因此把文件起名为 `stat_darwin_arm64.go` 一眼标明平台，里面再加一行 `//go:build darwin && arm64 && !ios` 就能精确把 iOS 排除掉。
-
-### 11.9.3 自定义标签与多版本 SDK 验证 {#ch11-9-3}
-
-`//go:build` 里还可以写任意自定义单词标签，默认不满足，只有命令行显式传 `-tags=...` 时才参与编译：最常见的两个用法是用 `//go:build ignore` 标记独立脚本或暂不参与包构建的草稿文件，以及在 [15.9 节](./chapter-15#ch15-9)用 `//go:build integration` 隔离慢速外部集成测试。
-
-如果想在本机严格按某个历史 Go 工具链版本编译验证，可显式设置**不带 `+auto`** 的精确版本号（如 `GOTOOLCHAIN=go1.26.2 go test ./...`；注意若带上 `+auto`，当 `go.mod` 声明了更高的 `go 1.27.1` 时命令仍会自动切回高版本，而严格锁定低版本工具链时只要求当前模块 `go.mod` 的 `go` 指令声明的最低版本不高于该历史版本；`toolchain` 指令只是推荐版本，强制指定的工具链会忽略它，例如 Go 1.27.1 可以编译 `go 1.27.1`、`toolchain go1.28.0` 的模块）。此外也可以通过官方包装器把指定版本下载到 `~/sdk` 长期备用：
+在企业内网拉取公司私有模块时，必须配置支持通配符的 **`GOPRIVATE`** 环境变量，多个前缀以逗号分隔：
 
 ```sh
-$ go install golang.org/dl/go1.26.2@latest
-$ go1.26.2 download
-$ go1.26.2 test ./...
+$ go env -w GOPRIVATE=*.corp.example.com,github.com/my-org/*
 ```
+
+匹配 `GOPRIVATE` 的模块路径会自动跳过公共 `GOPROXY` 与公共 `GOSUMDB`，既防止内部仓库名外泄，又直接走本机 Git SSH/HTTPS 凭据完成拉取；大型团队也可在内网部署 Athens 或 Artifactory 充当私有代理。
 
 ## 练习 {#ch11-exercises}
 
-以下三题分别动手实践 `embed.FS` 多文件嵌入、`staticcheck` 漏检错误排查以及交叉编译产物元数据核验。建议先独立完成，再展开核对参考答案。
+以下 2 道练习覆盖包目录与 `internal` 边界设计、标准 `go doc` 注释编写以及 `/v2` 不兼容主版本升级。建议先独立写出目录结构、源码与命令，再展开核对参考答案。
 
-### 练习 1：嵌入多语言提示文本
+### 练习 1：规划模块 `internal` 边界并编写 `go doc` 注释
 
-在同目录下准备 `english.txt`、`spanish.txt`、`french.txt` 三个文本文件，编写命令行程序将它们全部打入二进制：不传命令行参数时列出嵌入的全部文件名；传入语言名（如 `french`）时打印对应文件内容，找不到时打印错误并以状态码 `1` 退出。
+为模块 `github.com/yourname/ledger` 设计目录结构：对外提供根包 `ledger` 的导出函数 `FormatCents(cents int64) string`，同时将仅供模块内复用的符号辅助函数放入外部模块无权导入的内部包 `symbol`；为根包和 `FormatCents` 编写符合 `go doc` 规范的注释，并包含一条外部规范文档链接语法。
 
 <details>
 <summary>查看参考答案</summary>
 
+目录结构规划如下，其中 `internal/symbol` 仅对 `ledger` 模块目录树可见，外部模块导入会触发编译错误：
+
+```text
+ledger/
+  go.mod
+  ledger.go
+  internal/
+    symbol/
+      symbol.go
+```
+
+`internal/symbol/symbol.go`：
+
 ```go
-package main
+package symbol
+
+func DefaultCurrency() string { return "USD" }
+```
+
+`ledger.go` 的注释须紧贴声明上方且无空行，包注释以 `Package ledger` 开头，函数注释以 `FormatCents` 开头：
+
+```go
+// Package ledger formats monetary amounts in minor currency units.
+package ledger
 
 import (
-	"embed"
 	"fmt"
-	"io/fs"
-	"os"
+
+	"github.com/yourname/ledger/internal/symbol"
 )
 
-//go:embed *.txt
-var docs embed.FS
-
-func main() {
-	if len(os.Args) < 2 {
-		entries, err := fs.ReadDir(docs, ".")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		for _, entry := range entries {
-			fmt.Println(entry.Name())
-		}
-		return
+// FormatCents formats cents as a decimal string prefixed with the default currency code.
+//
+// See [MinorUnit] for currency exponent conventions.
+//
+// [MinorUnit]: https://www.iso.org/iso-4217-currency-codes.html
+func FormatCents(cents int64) string {
+	sign := ""
+	if cents < 0 {
+		sign = "-"
+		cents = -cents
 	}
-
-	data, err := docs.ReadFile(os.Args[1] + ".txt")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	os.Stdout.Write(data)
+	return fmt.Sprintf("%s %s%d.%02d", symbol.DefaultCurrency(), sign, cents/100, cents%100)
 }
 ```
 
-用通配符 `*.txt` 一步把同目录所有文本文件装进只读虚拟文件系统 `docs`：根目录传 `"."`，读取具体文件直接拼文件名，打出来的单个可执行文件拷到任何目录都能独立运行。
+可在模块根目录执行 `go doc .` 与 `go doc FormatCents` 核验生成的文档摘要与链接格式。
 
 </details>
 
-### 练习 2：理解并修复 `staticcheck` 报告的隐患
+### 练习 2：将导出函数升级为不兼容的 `/v2` 模块版本
 
-阅读下面可以通过 `go build` 和 `go vet` 的代码，指出 `staticcheck` 会报哪类问题、为什么编译器没拦住，并给出修复代码。
-
-```go
-package main
-
-import (
-	"errors"
-	"fmt"
-)
-
-func runStep(fail bool) error {
-	if fail {
-		return errors.New("step failed")
-	}
-	return nil
-}
-
-func main() {
-	err := runStep(false)
-	if err != nil {
-		fmt.Println(err)
-	}
-	err = runStep(true)
-	fmt.Println("finished")
-}
-```
+假设已发布的 `github.com/yourname/mathutil`（`v1.0.0`）导出了 `func Add(a, b int) int`，现需将其重构为支持所有整数与浮点数底层类型的泛型函数 `Add[T Number](a, b T) T`。说明为何该改动属于破坏性变更，并写出主干升级 `v2.0.0` 所需的 `go.mod`、源码及 Git 打标命令。
 
 <details>
 <summary>查看参考答案</summary>
 
-运行 `staticcheck ./...` 会针对 `err = runStep(true)` 报告 `SA4006: this value of err is never used`（由于 `runStep` 无外部副作用，还会附带提示返回值被实质丢弃 `SA4017`）。
+尽管直接调用 `Add(1, 2)` 可靠类型推断通过编译，但下游若存在 `f := mathutil.Add` 或 `any(mathutil.Add)` 这类未实例化的函数值引用，升级后会报错 `cannot use generic function Add without instantiation`，因此必须按不兼容主版本 `v2` 发布。
 
-编译器只检查局部变量 `err` 在整个作用域里有没有被读取过至少一次——第一处 `if err != nil` 已经满足了这个条件，因此第二次覆盖写入 `err` 后再也没人读它，编译器并不会报错。补上错误检查即可修复：
+1. 修改 `go.mod`，在模块路径末尾追加 `/v2` 后缀：
+   ```text
+   module github.com/yourname/mathutil/v2
 
-```go
-err = runStep(true)
-if err != nil {
-	fmt.Println(err)
-	return
-}
-fmt.Println("finished")
-```
+   go 1.27.4
+   ```
+2. 更新 `mathutil.go`，使用 `~` 匹配自定义底层数值类型且不误放行 `string`：
+   ```go
+   // Package mathutil provides generic arithmetic helpers.
+   package mathutil
 
-</details>
+   // Number matches any integer or floating-point underlying type.
+   type Number interface {
+   	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+   		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr |
+   		~float32 | ~float64
+   }
 
-### 练习 3：交叉编译并用 `go version -m` 离线核验
+   // Add returns the sum of a and b.
+   func Add[T Number](a, b T) T { return a + b }
+   ```
+3. 提交并推送带 `v` 前缀的主版本标签：
+   ```sh
+   $ git add go.mod mathutil.go
+   $ git commit -m "feat!: generalize Add for numeric types in v2"
+   $ git tag v2.0.0
+   $ git push origin main --tags
+   ```
 
-将练习 1 的程序交叉编译为 `linux/arm64` 平台可执行文件（若当前机器恰好是 `linux/arm64`，则改为编译 `windows/amd64`），再用一条无需运行该产物的命令核实其内嵌的目标操作系统与架构。
-
-<details>
-<summary>查看参考答案</summary>
-
-Unix Shell / Git Bash 下执行：
-
-```sh
-$ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/docs-linux-arm64 .
-$ go version -m bin/docs-linux-arm64
-```
-
-Windows PowerShell 下执行：
-
-```powershell
-$env:CGO_ENABLED = "0"; $env:GOOS = "linux"; $env:GOARCH = "arm64"
-go build -o bin/docs-linux-arm64 .
-Remove-Item Env:CGO_ENABLED, Env:GOOS, Env:GOARCH
-go version -m .\bin\docs-linux-arm64
-```
-
-`go version -m` 直接解析可执行文件头部的 Go 构建信息段，无需目标平台环境即可看到输出中包含 `build	GOOS=linux` 与 `build	GOARCH=arm64`。
+下游迁移时导入 `"github.com/yourname/mathutil/v2"`，且可与旧版 `v1` 在同一项目中并存。
 
 </details>
 
 ## 面试题 {#ch11-interview}
 
-以下四题分别检验 `go install` 与 `go tool` 的版本行为、`//go:embed` 的语法红线、文件名后缀与 `//go:build` 的叠加逻辑，以及线上二进制依赖审计方法。建议先独立作答，再展开核对参考答案。
+以下 3 道面试题分别考察跨模块 `go` 版本隔离与 `GOTOOLCHAIN`、`internal` 前缀权限以及 `go.mod` 版本治理指令边界。建议先独立作答，再展开核对参考答案。
 
-### 面试题 1：`go install pkg` 不加 `@版本` 会怎样？团队项目里怎么统一锁死代码生成工具的版本？
+### 面试题 1：主模块写 `go 1.27.4`，依赖模块写 `go 1.20`，两者分别按什么语言版本编译？离线 CI 设置 `GOTOOLCHAIN=local` 有何作用？
 
 <details>
 <summary>查看参考答案</summary>
 
-不带 `@latest` 或 `@vX.Y.Z` 时，`go install` 会按当前目录所属 `go.mod` 的依赖版本解析构建——如果不在任何模块目录内，或者当前模块根本没依赖这个工具包，命令会直接报错退出。
-
-个人装全局 CLI 工具应写 `go install pkg@latest`；而在团队项目里固定 `stringer`、linter 等工具版本，在 Go 1.24+ 中应使用 `go get -tool pkg@vX.Y.Z` 将工具写入 `go.mod` 的 `tool` 指令，统一通过 `go tool <名称>` 调用。
+1. 主模块按 **Go 1.27** 语言语义编译，依赖模块仍按其自身声明的 **Go 1.20** 语言语义编译，例如保留旧版 `for` 循环单变量复用行为。`go.mod` 的 `go` 指令在语言语义上按模块各自独立生效，但要求构建工具链版本不低于全图最高的 `1.27.4`。
+2. `GOTOOLCHAIN=local` 会关闭 `go` 命令按需联网自动下载新工具链的默认行为，强制只使用容器或宿主机预装的本地 Go 工具链；若本机版本低于 `1.27.4` 则立即报错中止，确保离线构建确定可控。
 
 </details>
 
-### 面试题 2：下面这段 `embed` 代码有哪三处会导致编译失败或嵌入失效的错误？
-
-```go
-package main
-
-func load() string {
-	// go:embed config.yaml
-	var cfg []rune
-	return string(cfg)
-}
-```
+### 面试题 2：模块根目录下有 `app/main.go`、`app/internal/auth`、`app/api/v1` 和 `shared/log`，哪些包允许导入 `app/internal/auth`？
 
 <details>
 <summary>查看参考答案</summary>
 
-三处全错：
+`app/main.go` 与 `app/api/v1` **允许**导入；`shared/log` **不允许**导入，编译会直接报错 `use of internal package ... not allowed`。
 
-1. **未导入 `"embed"` 包**：使用嵌入指令的文件必须导入 `"embed"`（只用 `string` 或 `[]byte` 时写 `_ "embed"`）；
-2. **注释多了空格且位置写在函数内部**：`// go:embed` 在 `//` 后多了空格会被当成普通注释忽略（必须紧写为 `//go:embed`），而且嵌入变量**只能声明在包级作用域**，不能是函数局部变量；
-3. **目标变量类型非法**：只支持 `string`、`[]byte` 和 `embed.FS` 三种类型，不支持 `[]rune`。
+`internal` 规则严格检查导入路径前缀：`.../app/internal/...` 仅对 `internal` 的直接父目录 `app` 及其下属整棵子树可见。`shared/log` 虽在同一个模块内，但不在 `app/` 子树下，因此无权访问。
 
 </details>
 
-### 面试题 3：源文件起名为 `sys_darwin_arm64.go`，顶部又写了 `//go:build darwin && !ios`，两者怎么叠加？为什么写注释时下面要空一行？
+### 面试题 3：`replace`、`exclude` 与 `retract` 分别由谁编写、在什么范围内生效？
 
 <details>
 <summary>查看参考答案</summary>
 
-文件名后缀与 `//go:build` 指令之间是**逻辑“与（AND）”关系**，两边条件必须同时满足才会纳入编译：文件名 `sys_darwin_arm64.go`（顺序固定为 `*_GOOS_GOARCH.go`）隐式要求 `darwin && arm64`（注意 `GOOS=ios` 默认也会匹配 `darwin` 标签），再叠加上 `//go:build darwin && !ios`，最终只在 macOS ARM64 下编译、在 iOS ARM64 下排除。
-
-`//go:build` 行下方必须留一个空行再写 `package` 子句（或包注释），是为了把它与紧贴 `package` 的包级文档注释区分开。
-
-</details>
-
-### 面试题 4：拿到一个线上正在跑的 Go 二进制文件，没有对应的构建日志，怎么查它打包了哪些第三方依赖、有没有已知漏洞？
-
-<details>
-<summary>查看参考答案</summary>
-
-直接运行 `go version -m <二进制文件>` 即可离线列出构建该二进制所用的 Go 工具链版本、Git 提交哈希、`GOOS`/`GOARCH` 以及全部打包进去的第三方模块版本与校验和；紧接着运行 `govulncheck -mode=binary <二进制文件>` 即可对照漏洞数据库扫描受影响的符号（若需精确到源码行号的调用栈，再切回查出的 Git 提交版本跑源码级 `govulncheck ./...`）。用 Go 代码批量审计外部二进制则可调用标准库 `"debug/buildinfo"` 的 `buildinfo.ReadFile`。
+- **`replace` 与 `exclude`**：由**下游使用方**写在主模块 `go.mod` 中，**仅在当前模块作为主模块构建时生效**，当前模块被其他项目作为依赖引入时这两条指令会被自动忽略。`replace` 用于重定向到分支 fork 或替代版本，本地多模块联调则应优先用 `go.work`；`exclude` 用于拉黑第三方依赖的特定缺陷版本。
+- **`retract`**：由**上游模块维护者**写在新发布版本的 `go.mod` 中并推送新标签，用于向全网撤回自己曾发错的旧版本，使 `@latest` 与 `go get -u` 自动跳过它们并向已使用的下游输出警告。
 
 </details>
 
 ## 参考资料
 
-- [Go 命令文档：`go install` 与包版本语法](https://go.dev/cmd/go/#hdr-Compile_and_install_packages_and_dependencies)
-- [Go 模块参考：`tool` 工具依赖指令（Go 1.24+）](https://go.dev/doc/modules/gomod-ref#tool)
-- [Go 命令文档：`go generate`](https://go.dev/cmd/go/#hdr-Generate_Go_files_by_processing_source)
-- [Go 命令文档：`go version -m` 构建元数据](https://go.dev/cmd/go/#hdr-Print_Go_version_information_for_executable_files)
-- [Go 命令文档：构建约束与平台文件名后缀（Build constraints）](https://go.dev/cmd/go/#hdr-Build_constraints)
-- [Go 标准库 `embed`：文件嵌入规则与通配语法](https://pkg.go.dev/embed)
-- [Go 标准库 `debug/buildinfo` 与 `runtime/debug.ReadBuildInfo`](https://pkg.go.dev/debug/buildinfo)
-- [Go 漏洞管理与 `govulncheck` 指南](https://go.dev/security/vuln/)
-- [`staticcheck` 检查规则文档](https://staticcheck.dev/docs/)
-- [`golangci-lint` 配置参考](https://golangci-lint.run/docs/)
-- [Go 多版本工具链安装与管理](https://go.dev/doc/manage-install)
+- [Go 模块参考手册](https://go.dev/ref/mod)
+- [Go 模块文件指令参考](https://go.dev/doc/modules/gomod-ref)
+- [Go 工具链管理与 `GOTOOLCHAIN` 说明](https://go.dev/doc/toolchain)
+- [最小版本选择算法说明](https://go.dev/ref/mod#minimal-version-selection)
+- [Go Doc 注释格式规范](https://go.dev/doc/comment)
+- [Go 官方博客：Go Modules: v2 and Beyond](https://go.dev/blog/v2-go-modules)
+- [Go 官方博客：Get familiar with workspaces（`go.work`）](https://go.dev/blog/get-familiar-with-workspaces)
