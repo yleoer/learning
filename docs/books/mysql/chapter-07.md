@@ -155,7 +155,7 @@ JSON 中的四项成本满足严格累加关系：`eval_cost = 累计扫描行�
 - **`loops`**：父算子调用该子算子的循环总次数；内层嵌套循环的 `loops` 恒等于驱动表实际输出的扇出行数。
 - **`never executed`**：当驱动表过滤后实际返回 `0` 行或外层 `LIMIT` 提前满足短路时，未曾触发的子算子会直接标记为 `never executed`。
 
-**生产执行安全红线**：`EXPLAIN ANALYZE` 会完整执行查询并仅抑制结果集向客户端发送，对超大慢查询直接运行会真实消耗线上 I/O 与锁资源；自 **MySQL 8.0.19** 起支持对 `UPDATE`、`DELETE` 及 `TABLE` 语句执行 `EXPLAIN ANALYZE`，执行写语句会**真实修改数据并持有行锁**，线上排障必须在显式事务 `START TRANSACTION; EXPLAIN ANALYZE DELETE ...; ROLLBACK;` 内包裹测试并立即回滚。
+**生产执行安全边界与写语句误区澄清**：`EXPLAIN ANALYZE` 支持 `SELECT`、`TABLE`（MySQL 8.0.19+）以及多表 `UPDATE` / `DELETE` 语句，运行期间会真实驱动迭代器扫描与连接，仅抑制结果集向客户端发送。针对写语句需特别澄清一个高频误区：在 MySQL 8.4 实测与源码实现（`sql/sql_update.cc`、`sql/sql_delete.cc`）中，简单单表 `UPDATE` / `DELETE` 未接入迭代器执行器，执行 `EXPLAIN ANALYZE` 会直接输出 `<not executable by iterator executor>`；多表 `UPDATE ... JOIN` / `DELETE ... JOIN`（或改写为连接的含子查询写语句）虽会真实执行扫描与连接迭代器并输出实际行数与耗时，但在 `is_explain_analyze` 模式下会跳过实际的行修改与删除步骤，**不会真正修改目标行，也不会提交写入**。因此，① 它**不能**用于衡量实际行写入、维护二级索引、写 Undo/Redo 或事务提交刷盘的耗时；② 生产环境仍须慎用——因为底层扫描、连接与过滤会真实消耗 CPU、I/O 与内存，并可能产生锁竞争或触发含副作用的存储函数；线上排障优先将写条件改写为等价 `SELECT` 分析，或移至隔离测试环境验证，且耗时过长时可随时通过 `KILL QUERY` 中止。
 
 ## 7.3 使用 optimizer_trace 透视优化器选型根因 {#ch7-3}
 
@@ -360,15 +360,17 @@ MySQL 8.4.13 实测 `EXPLAIN ANALYZE` 输出如下，预估 `rows=10` 与真实 
 
 </details>
 
-### 面试题 3：`EXPLAIN` 与 `EXPLAIN ANALYZE` 各适用于什么场景？生产环境对 `UPDATE` 或 `DELETE` 语句执行 `EXPLAIN ANALYZE` 存在什么风险，应如何规避？
+### 面试题 3：`EXPLAIN` 与 `EXPLAIN ANALYZE` 各适用于什么场景？在 MySQL 8.4 中对 `UPDATE` 或 `DELETE` 语句执行 `EXPLAIN ANALYZE` 会真正修改数据吗？线上排障应注意什么？
 
 <details>
 <summary>查看参考答案</summary>
 
 1. **适用场景分工**：
    - **`EXPLAIN`**——涵盖传统格式、`FORMAT=JSON` 与 `FORMAT=TREE`：仅运行到优化器生成执行计划即止，**不真正执行 SQL**，毫秒级返回且零数据副作用。适用于日常上线前 SQL 索引审查、超大慢查询初步静态诊断及生产高峰期安全检视。
-   - **`EXPLAIN ANALYZE`**：在优化器生成计划后**真实驱动火山迭代器完整跑完查询**，适用于静态 `EXPLAIN` 看着走了索引但线上依然极慢、怀疑统计信息失真导致预估 `rows` 与真实行数背离、或需定位连接/排序/聚合多算子中究竟哪一步占用了核心耗时的深度剖析场景。
-2. **`UPDATE` / `DELETE` 执行风险与规避方案**：MySQL 8.0.19+ 允许直接执行 `EXPLAIN ANALYZE UPDATE ...` 或 `DELETE ...`，该命令会**真实修改或删除表中记录、生成 Undo/Redo 日志并持有行级排他锁**，在默认 `autocommit = ON` 下执行完毕即永久提交！生产或准生产验证写语句时，优先将其等价改写为同 `WHERE` 条件的 `EXPLAIN ANALYZE SELECT ...`；若确需实测写算子开销，必须在显式事务 `START TRANSACTION; EXPLAIN ANALYZE DELETE ...; ROLLBACK;` 中包裹执行并立即回滚，且避开大批量锁表语句。
+   - **`EXPLAIN ANALYZE`**：在优化器生成计划后**真实驱动火山迭代器跑完扫描与连接管道**，适用于静态 `EXPLAIN` 看着走了索引但线上依然极慢、怀疑统计信息失真导致预估 `rows` 与真实行数背离、或需定位连接/排序/聚合多算子中究竟哪一步占用了核心耗时的深度剖析场景。
+2. **对 `UPDATE` / `DELETE` 的真实行为与线上注意事项**：
+   - **不会真正修改并提交目标行**：在 MySQL 8.4 中，简单单表 `UPDATE` / `DELETE` 执行 `EXPLAIN ANALYZE` 会直接返回 `<not executable by iterator executor>`，不执行查询也不改数据；多表 `UPDATE ... JOIN` / `DELETE ... JOIN`（及转为连接的含子查询写语句）虽会真实执行底层扫描与连接迭代器并输出实际行数和耗时，但源码（`sql/sql_update.cc`、`sql/sql_delete.cc`）在 `EXPLAIN ANALYZE` 模式下会跳过实际的行更新和删除动作，因此**不会真正改动表数据，也不会产生事务提交写入**。
+   - **不能衡量写入与刷盘开销，但线上仍须慎用**：正因跳过了实际写入，`EXPLAIN ANALYZE` 无法反映维护索引、写 Undo/Redo 及事务提交刷盘的真实成本；同时，其扫描和连接阶段会真实消耗线上 CPU、I/O 与内存资源，仍可能带来锁开销或执行含副作用的存储函数。生产排障优先用普通 `EXPLAIN`（含 `FORMAT=JSON`）检查计划，或提取相同 `WHERE` / `JOIN` 条件改写为只读 `SELECT` 在低峰期或从库/测试库用 `EXPLAIN ANALYZE` 验证，必要时用 `KILL QUERY` 及时中止。
 
 </details>
 

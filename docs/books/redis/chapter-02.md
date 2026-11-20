@@ -39,7 +39,7 @@ Redis 顶层键空间是一个全局哈希表，通过链式哈希解决冲突�
 | 数据类型 | 紧凑编码及触发上限（Redis 8 默认配置） | 大规模标准编码 | 慢操作避坑与复杂度核心口诀 |
 | --- | --- | --- | --- |
 | **`String`** | `int`（64 位有符号整数）；`embstr`（短串嵌入分配） | `raw`（独立动态 `SDS`） | 单键 `GET`/`SET`/`INCR` 均为 `O(1)`，但 `500MB` 超大 String 网络收发仍会卡主线程 |
-| **`Hash`** | **`listpack`**（字段数 `≤ 512` 且单键值 `≤ 64B`） | `hashtable` | `HGET`/`HSET`（原 `HMSET` 已弃用）单字段 `O(1)`；**严禁对大 Hash 执行 `HGETALL` `O(N)`，改用 `HSCAN`** |
+| **`Hash`** | **`listpack`**（字段数 `≤ 512` 且单键值 `≤ 64B`；启用字段过期时转为紧凑编码 **`listpackex`**） | `hashtable` | `HGET`/`HSET`（原 `HMSET` 已弃用）单字段 `O(1)`；**严禁对大 Hash 执行 `HGETALL` `O(N)`，改用 `HSCAN`** |
 | **`List`** | **`listpack`**（单节点内紧凑存放） | `quicklist` | 首尾 `LPUSH`/`RPOP` 与 `LLEN` 均为 **`O(1)`**；按索引 `LINDEX`/`LSET` 及长区间 `LRANGE` 为 `O(N)` |
 | **`Set`** | `intset`（纯整数且 `≤ 512` 个）；**`listpack`**（非整数但元素 `≤ 128` 个且单值 `≤ 64B`，7.2+） | `hashtable` | `SADD`/`SISMEMBER`/`SCARD` 为 `O(1)`；`SMEMBERS` 与大集合交并差 `SINTER`/`SUNION`/`SDIFF` 耗时高，**7.0+ 仅求交集基数优先用 `SINTERCARD ... LIMIT`** |
 | **`Sorted Set`** | **`listpack`**（元素 `≤ 128` 个且单成员 `≤ 64B`） | `skiplist` + `hashtable` | 哈希表支撑 `ZSCORE` `O(1)`，跳表支撑 `ZADD` 与统一范围查询 **`ZRANGE ... BYSCORE`**（6.2+ 取代已弃用的 `ZRANGEBYSCORE`）`O(log N + M)`；6.2+ 新增 `ZDIFF` |
@@ -81,6 +81,9 @@ HTTL user:sess:1001 FIELDS 1 refresh_token
 HSETEX user:sess:1001 EX 3600 FIELDS 1 access_token "eyJhbGciOi..."
 ```
 
+> [!NOTE]
+> **字段级过期（HFE）的底层紧凑编码 `listpackex`**：在 Redis 7.4+/8.x 中，给满足 `hash-max-listpack-entries` 与 `hash-max-listpack-value` 阈值的短字段 Hash 设置字段 TTL 后，其底层编码会由 `listpack` 转为专门的紧凑编码 **`listpackex`**（在连续内存块内以 `[field, value, expireAt]` 三元组紧凑存放），**并不会直接退化为 `hashtable`**；只有字段数或单值长度超过阈值时才会升级为 `hashtable`。需注意一旦转为 `listpackex`，即使后续用 `HPERSIST` 清除 TTL 也不会自动降级回 `listpack`，且同 Hash 内未设 TTL 的字段也会保留极少量过期占位元数据。
+
 ## 2.3 亿级统计、GEO、Stream 队列与原生多模型 {#ch2-3}
 
 ### 2.3.1 四类亿级统计选型：Set、ZSet、Bitmap 与 HyperLogLog {#ch2-3-1}
@@ -105,7 +108,7 @@ GEOSEARCH cars:loc FROMLONLAT 116.40 39.91 BYRADIUS 5 km ASC COUNT 10 WITHDIST
 
 2. **轻量级可靠消息队列选型（`List` vs `Pub/Sub` vs `Stream`）**：
    - `Pub/Sub` 纯内存转发不持久化，消费者离线或输出缓冲区溢出即丢消息；`List` 虽可用 `LPUSH` + **`BLMOVE`**（6.2+ 取代已废弃的 `BRPOPLPUSH`）备份防丢，但**不支持多消费组广播与组内水平分担**。
-   - **Redis 5.0+ `Stream`**（底层为 `rax` 基数树 + `listpack`）完备满足保序、全局唯一 `<ms>-<seq>` ID、消费组负载均衡与崩溃恢复：
+   - **Redis 5.0+ `Stream`**（底层为 `rax` 基数树 + `listpack`）完备满足保序、**单个 Stream 内唯一单调递增**的 `<ms>-<seq>` ID、消费组负载均衡与崩溃恢复：
 
 ```bash
 # 1. 写入消息并近似裁剪保留最近 10000 条（命令行调用时注意给 ~ 和 * 加引号防 Shell 展开）
@@ -115,12 +118,14 @@ XGROUP CREATE mq:orders cg_pay 0 MKSTREAM
 XREADGROUP GROUP cg_pay worker_1 COUNT 10 BLOCK 2000 STREAMS mq:orders >
 # 3. 业务处理成功后确认（从消费组 PEL 待确认列表移除）
 XACK mq:orders cg_pay 1700000000000-0
-# 4. Redis 6.2+ 故障接管：worker_2 自动扫描并认领空闲超 60000ms 未确认的死信消息
+# 4. Redis 6.2+ 超时待确认消息接管：worker_2 自动扫描并认领空闲超 60000ms 未 XACK 的 PEL 消息
 XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
 ```
 
 > [!IMPORTANT]
-> **订正原书 `XACK` 删除语义误区**：执行 `XACK` **仅将该消息从当前消费组的 `PEL`（Pending Entries List，待确认列表）中移除，绝不会删除 Stream 中的消息本体**！正因如此，其他消费组（如实时风控组与离线归档组）才能各自独立消费全量数据。控制 Stream 内存上限必须配合 `XADD ... MAXLEN/MINID ~` 或 `XTRIM`。
+> **订正 `XACK` 删除语义与 `XAUTOCLAIM` 接管语义误区**：
+> 1. 执行 `XACK` **仅将该消息从当前消费组的 `PEL`（Pending Entries List，待确认列表）中移除，绝不会删除 Stream 中的消息本体**！正因如此，其他消费组（如实时风控组与离线归档组）才能各自独立消费全量数据。控制 Stream 内存上限必须配合 `XADD ... MAXLEN/MINID ~` 或 `XTRIM`。
+> 2. **`XAUTOCLAIM` 接管的消息不等同于“业务失败”或“死信”**：它仅仅代表该消息在 PEL 中超过空闲时间阈值仍未收到 `XACK`——原消费者可能只是处理较慢、网络抖动或进程宕机。因此业务消费逻辑必须保证**幂等**（防原消费者慢完成导致重复处理）；若需识别真正反复失败的毒丸/死信消息，应结合 `XPENDING` 返回的**投递次数（delivery count）**达到上限后再人工或自动转存死信队列并 `XACK`。
 
 ### 2.3.3 Redis 8 原生内置 TimeSeries、JSON、概率结构与 Vector Set {#ch2-3-3}
 
@@ -145,14 +150,15 @@ XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
 1. **逐条 String 与 Hash 二级编码对比**：
    - 在 Redis 8 中，`promo:10000001`（`14B` 键）+ `24B` 值总长 `38B ≤ 41B`，虽能命中 `kvobj` 的 `embstr` 单块 `64B` 分配，但 5000 万个顶层键仍需约 `64B × 5×10^7 ≈ 3.2 GB` 载荷外加 `64M` 级全局哈希桶数组（`512 MiB`），合计近 **`3.7 GB`**。
    - 若将 8 位 `sku_id` 拆为前 5 位桶号（如 `promo:10000`）做 Hash key、后 3 位（`000～999`）做 field，每 1000 个商品共用 1 个顶层键并在 `listpack` 内无指针连续存放，单条仅占约 `30B`，总内存可压降至 **`1.5 GB` 左右**（节省约 60%）。
-2. **分项过期注意事项与命令方案**：
-   - 注意：一旦对某个 Hash 启用了 Redis 7.4+/8.x 的字段级过期（`HEXPIRE` / `HSETEX`），为高效追踪字段到期时间，该 Hash 会升级为 `hashtable` 编码。因此应将**长期稳定的促销文案**存入高密度二级编码 Hash（保持纯 `listpack`），而将**少量带独立 TTL 的闪购价**按业务实体或活动维度存入启用 `HSETEX` 的独立 Hash：
+2. **分项过期编码边界与命令方案**：
+   - 在 Redis 7.4+/8.x 中，只要字段数与单值长度未超过 `hash-max-listpack-entries` / `hash-max-listpack-value` 阈值，对短字段 Hash 执行 `HEXPIRE` / `HSETEX` 后会转为紧凑的 **`listpackex`** 编码，**并不会一定退化为 `hashtable`**，因此不必因担心退化为哈希表而盲目拆成独立 String 键。
+   - 不过，`listpackex` 会为同 Hash 内每个字段携带少量过期时间元数据（且转为 `listpackex` 后不可逆降级回 `listpack`）。当 5000 万全量促销文案绝大多数无 TTL、仅有少量活动商品存在 15 分钟闪购价时，仍可将**长期稳定的促销文案**存入纯 `listpack` 二级编码 Hash，而将**带独立 TTL 的活动闪购属性**直接用 `HSETEX` 存入保持 `listpackex` 紧凑编码的 Hash（按商品或活动分桶均可，避免给无过期字段平摊额外过期槽位）：
      ```bash
      # 1. 全量静态紧凑二级编码（保持 listpack）
      CONFIG SET hash-max-listpack-entries 1000
      HSET promo:10000 001 "满299减50"
 
-     # 2. 活动商品多字段会话/闪购属性按字段独立 900s 过期（Redis 8 HSETEX）
+     # 2. 活动商品多字段闪购属性按字段独立 900s 过期（Redis 8 HSETEX，短字段保持 listpackex 紧凑编码）
      HSETEX flash:sku:10000001 EX 900 FIELDS 2 price "199.00" limit "2"
      ```
 
@@ -174,8 +180,8 @@ XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
      BITCOUNT sign:week_all
      ```
    - **内存核算**：单日 1 亿 bit 占 `100,000,000 ÷ 8 ÷ 1024 ÷ 1024 ≈ 11.92 MiB`；7 天原始位图加 1 个结果位图共 8 个键，合计仅约 **`95.4 MiB`**（注意大位图 `BITOP` 应在从库或低峰期执行）。
-2. **Stream 双独立消费组 + 死信自动认领闭环**：
-   - 为积分服务和归档服务分别创建**两个独立的消费组** `cg_points` 和 `cg_audit`，同一消费组内的多个实例以不同消费者名拉取 `>` 实现负载均衡，崩溃残留于 PEL 的超时消息由存活实例定时调用 `XAUTOCLAIM` 接管重试：
+2. **Stream 双独立消费组 + 超时待确认消息接管闭环**：
+   - 为积分服务和归档服务分别创建**两个独立的消费组** `cg_points` 和 `cg_audit`，同一消费组内的多个实例以不同消费者名拉取 `>` 实现负载均衡；存活实例定时调用 `XAUTOCLAIM` 接管超过空闲时间阈值仍未 `XACK` 的 PEL 消息（注意超时未确认可能仅因原消费者处理慢或宕机，并不直接等同于业务失败/死信，因此消费逻辑需保持幂等，并结合 `XPENDING` 检查投递次数以识别真正反复失败的死信消息）：
      ```bash
      XGROUP CREATE mq:order cg_points 0 MKSTREAM
      XGROUP CREATE mq:order cg_audit  0 MKSTREAM
@@ -184,7 +190,7 @@ XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
      XREADGROUP GROUP cg_points pts_1 COUNT 20 BLOCK 2000 STREAMS mq:order >
      XACK mq:order cg_points <msg_id>
 
-     # 积分组定时巡检：自动接管组内其他崩溃节点空闲超 30 秒的未确认消息
+     # 积分组定时巡检：自动接管组内其他消费者空闲超 30 秒仍未 XACK 的待确认消息
      XAUTOCLAIM mq:order cg_points pts_2 30000 0-0 COUNT 20
      ```
 

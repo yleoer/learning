@@ -57,15 +57,28 @@ RESP 2 的 5 种基础帧与 RESP 3（Redis 6.0+ 引入）的核心扩展对照�
 在 Redis 6.0 之前，实例仅靠单一全局密码 `requirepass` 鉴权，并依赖 `rename-command KEYS ""` 重命名封禁危险命令——**`rename-command` 在 Redis 7.0+ 已正式标记弃用**。现代生产环境统一使用 **ACL**（6.0 引入，7.0 升级为支持读写分离与选择器的 **ACL v2**）按“用户 + 命令集 + 键前缀 + Pub/Sub 频道”实施最小权限控制：
 
 ```bash
-# 创建仅允许对 cache:* 读、对 session:* 读写的业务账号，启用连接探活并封禁危险命令集
-127.0.0.1:6379> ACL SETUSER app_svc on >StrongPass#2026 (%R~cache:* +@read) (%RW~session:* +@read +@write) +ping -@dangerous
+# 创建最小权限业务账号：按键前缀分别列出显式命令白名单，并开放连接探活 PING
+127.0.0.1:6379> ACL SETUSER app_svc reset on >StrongPass#2026 +ping (%R~cache:* +get +mget +hget +hmget) (%RW~session:* +get +set +hget +hset +del +expire)
 OK
+
+# 上线前用 ACL DRYRUN（Redis 7.0+）对“应放行”与“应拒绝”的命令各做一次实测验证
+127.0.0.1:6379> ACL DRYRUN app_svc GET cache:101
+OK
+127.0.0.1:6379> ACL DRYRUN app_svc SET session:101 ok EX 60
+OK
+127.0.0.1:6379> ACL DRYRUN app_svc SET cache:101 x
+"User app_svc has no permissions to access the 'cache:101' key"
+127.0.0.1:6379> ACL DRYRUN app_svc KEYS *
+"User app_svc has no permissions to run the 'keys' command"
+127.0.0.1:6379> ACL DRYRUN app_svc FLUSHALL
+"User app_svc has no permissions to run the 'flushall' command"
 ```
 
-编写 ACL 规则须避开两个高频陷阱：
+编写 ACL 规则须避开三个高频陷阱：
 
 1. **密码前缀 `>` 后严禁加空格**：必须紧贴写为 `>StrongPass#2026`（原书误写为 `> abc` 会直接报未知修饰符语法错误）。
 2. **`+@read` 不包含连接探活命令 `PING`**：`PING` 归属 `@fast` 与 `@connection` 类别；连接池通常在借出连接时发送 `PING`，若只授权 `+@read` 而漏写 `+ping`（或 `+@connection`），客户端初始化即报 `NOPERM User ... has no permissions to run the 'ping' command`。
+3. **括号选择器 `(...)` 独立求值，根规则末尾的 `-@dangerous` 不会撤销选择器内已放行的危险命令**：Redis 7.0+ 校验 ACL 权限时按“根规则 OR 选择器 1 OR 选择器 2 …”依次独立求值，只要任一规则集命中即放行。若误写成 `(%R~cache:* +@read) (%RW~session:* +@read +@write) +ping -@dangerous`，末尾的 `-@dangerous` 仅作用于根规则；而 `KEYS` 同时归属 `@read` 与 `@dangerous`、`FLUSHALL`/`FLUSHDB` 同时归属 `@write` 与 `@dangerous`，且这些命令均无键参数约束，导致括号内的 `+@read`/`+@write` 反而会直接放行 `KEYS *` 与 `FLUSHALL`！生产上应在每个选择器内按业务需要显式列出**最小权限命令白名单**（若确需使用大类授权，也必须在对应括号内单独写明 `-@dangerous`），并坚持在变更后使用 **`ACL DRYRUN`** 对允许命令和拒绝命令各验证一次。
 
 ## 1.2 单线程事件循环与异步多线程 I/O 引擎 {#ch1-2}
 
@@ -155,9 +168,17 @@ ACL SETUSER order_ro on > Ord#2026 ~order:* +@read -@dangerous
    - **密码语法错误**：`>` 与密码 `Ord#2026` 之间多写了空格，Redis 会把 `>` 解析为空密码修饰符，再把 `Ord#2026` 当成非法权限词报错。
    - **遗漏连接探活权限**：`+@read` 仅包含键值只读命令，不包含属于 `@connection` 类别的 `PING`、`ECHO`、`CLIENT` 等连接管理命令，导致连接池探活失败。
    - **未配置 Pub/Sub 频道与发布命令权限**：ACL v2 默认新建用户无频道权限（或受 `acl-pubsub-default` 限制），需显式授予 `&order:events` 频道权限及 `+publish`（或 `+spublish`）命令权限。
-2. **完整修复命令**：
+2. **完整修复命令与 `ACL DRYRUN` 验证**：
+   - 本例所有规则均在同一套根规则内生效（未使用括号选择器），`-@dangerous` 可以从根规则中剔除 `KEYS` 等危险命令；若追求更严格的最小权限，推荐直接将 `+@read` 收敛为业务实际使用的读命令白名单（如 `+get +mget +hget +hgetall`），并在配置后用 `ACL DRYRUN` 同时校验放行与拒绝路径：
    ```bash
    ACL SETUSER order_ro reset on >Ord#2026 ~order:* &order:events +@read +ping +publish -@dangerous
+
+   # 验证应放行与应拒绝命令
+   ACL DRYRUN order_ro PING                         # 预期返回 OK
+   ACL DRYRUN order_ro GET order:1001               # 预期返回 OK
+   ACL DRYRUN order_ro PUBLISH order:events paid    # 预期返回 OK
+   ACL DRYRUN order_ro KEYS *                       # 预期拒绝：no permissions to run the 'keys' command
+   ACL DRYRUN order_ro SET order:1001 x             # 预期拒绝：no permissions to run the 'set' command
    ```
 
 </details>

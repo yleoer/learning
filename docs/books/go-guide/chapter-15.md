@@ -128,7 +128,7 @@ func scanLines(path string) error {
 
 标准库 `"time"` 严格区分“时长”与“时刻”。`time.Duration` 底层是以纳秒为单位的 `int64`，最大可表示约 290 年。函数参数接收超时或间隔时应直接使用 `time.Duration`，调用处写 `500 * time.Millisecond` 自带单位，避免裸 `int` 引发秒与毫秒混淆；配置字符串可用 `time.ParseDuration("1h30m")` 解析，其最大支持单位为小时 `"h"`。
 
-`time.Time` 是携带时区信息的不可变值类型。**比较两个 `time.Time` 时严禁使用 `==`，必须使用 `t1.Equal(t2)`、`t1.Before(t2)` 或 `t1.After(t2)`**。因为 `==` 会连同结构体内部的 `*time.Location` 指针与单调时钟字段逐一比对，导致同一绝对时刻在 UTC 与东八区表示下、或有无单调时钟读数时被判为 `false`；`Equal` 则会自动换算为同一瞬时并忽略单调时钟位。
+`time.Time` 是携带时区信息的不可变值类型。**比较两个 `time.Time` 时严禁使用 `==`，必须使用 `t1.Equal(t2)`、`t1.Before(t2)` 或 `t1.After(t2)`**。因为 `==` 会连同结构体内部的 `*time.Location` 指针与单调时钟字段逐一比对，导致同一绝对时刻在 UTC 与东八区表示下、或有无单调时钟读数时被判为 `false`。`Equal`、`Before`、`After`、`Compare`（Go 1.20+）及 `Sub` 遵循统一规则：**当两者均携带单调时钟读数时，仅比较单调读数并忽略墙上时间；只要任一方不含单调读数，则自动回退为比较换算后的同一墙上瞬时（忽略时区表示差异）**。若需强制剥离单调读数以按墙上时间比较，可调用 `t.Round(0)`。
 
 Go 的时间格式化与解析不使用 `yyyy-MM-dd` 占位符，而是以固定参考时刻 **`Mon Jan 2 15:04:05 MST 2006`**——依次对应 `01月 02日 03时 04分 05秒 06年 -07时区`——作为样式模板。日常开发优先选用标准库预定义布局常量：
 
@@ -142,7 +142,7 @@ Go 的时间格式化与解析不使用 `yyyy-MM-dd` 占位符，而是以固定
 
 ### 15.3.2 单调时钟与 Timer / Ticker 使用边界 {#ch15-3-2}
 
-操作系统同时维护两套时钟：**墙上时钟（Wall Clock）**用于指示当前日历时间，可能因 NTP 网络校时发生跳变或回拨；**单调时钟（Monotonic Clock）**自系统启动起匀速递增，绝不回拨。`time.Now()` 返回的 `time.Time` 已自动附带单调时钟读数：只要起点通过 `start := time.Now()` 获取，后续调用 `time.Since(start)` 或 `end.Sub(start)` 计算耗时时底层会自动对单调读数求差，即便中途系统时钟回拨也不会算出负数耗时；而经 `time.Parse` 或反序列化得到的外部时间不含单调读数。
+操作系统同时维护两套时钟：**墙上时钟（Wall Clock）**用于指示当前日历时间，可能因 NTP 网络校时发生跳变或回拨；**单调时钟（Monotonic Clock）**自系统启动起匀速递增，绝不回拨。`time.Now()` 返回的 `time.Time` 已自动附带单调时钟读数：只要起点与终点均通过 `time.Now()` 获取（`time.Since(start)` 内部也会读取当前单调时钟），调用 `time.Since(start)` 或 `end.Sub(start)` 时底层会自动仅对单调读数求差，即便中途系统时钟回拨也不会算出负数耗时；而经 `time.Parse`、`t.UTC()`、`t.Round(0)` 或反序列化得到的 `time.Time` 不含单调读数，任一方缺失单调读数时 `Sub` 与 `Equal` 等方法都会回退到墙上时钟计算。
 
 在并发 `select` 中处理定时与周期任务常用 `time.NewTimer`、`time.After` 与 `time.NewTicker`。这里有一项重要的**跨版本运行时改进**：在 Go 1.22 及更早版本中，未触发或未调用 `Stop()` 的 `Timer` 与 `Ticker` 会一直挂在运行时堆中无法回收；**自 Go 1.23 起，只要没有任何代码继续引用某个 `Timer` 或 `Ticker`，即使从未调用 `Stop()`，垃圾回收器也能立即将其回收**。
 
@@ -255,9 +255,9 @@ func countGZipLines(path string) (int, error) {
 <details>
 <summary>查看参考答案</summary>
 
-`time.Time` 结构体内部除了墙上时间，还包含时区指针 `*time.Location` 和可选的单调时钟读数。运算符 `==` 会逐字段硬比时区指针和单调读数，导致代表同一瞬时的 UTC 时间与本地时区时间被判为不相等；应统一使用 `t1.Equal(t2)`。
+`time.Time` 结构体内部除了墙上时间，还包含时区指针 `*time.Location` 和可选的单调时钟读数。运算符 `==` 会逐字段硬比时区指针和单调读数，导致代表同一瞬时的 UTC 时间与本地时区时间、或有无单调读数的同一时刻被判为不相等；应统一使用 `t1.Equal(t2)`。`Equal` 与 `Sub` 遵循相同机制：**两者均含单调读数时只比较或相减单调读数（忽略墙上时间），任一方不含单调读数时才回退为比较或相减换算后的墙上时间**。
 
-`time.Now()` 生成的 `time.Time` 携带单调时钟读数，调用 `time.Since(start)` 或两者的 `Sub` 时会自动采用单调时钟相减，彻底绕开可能被 NTP 跳变或回拨的系统墙上时间。
+因此，当 `start` 与 `end` 均由 `time.Now()` 生成（或直接调用 `time.Since(start)`）时，两者都携带单调时钟读数，`Sub` 会自动用单调读数相减，彻底绕开可能被 NTP 跳变或回拨的系统墙上时间。
 
 </details>
 

@@ -84,7 +84,7 @@ Prometheus 采用基于服务发现主动拉取（HTTP Pull）的采集架构，
 > [!IMPORTANT]
 > **严正订正原书 10.3.1 节对 `Counter`、`Histogram` 与 `Summary` 的三处核心概念误读**：
 > 1. **`Counter` 绝不是“可增可减的合计量”**：原书把“货物库存量、在职员工人数”归入 `Counter`，这是典型概念错误！在 Prometheus 与 OTel 规范中，**`Counter` 是严格单调递增只增不减的累计计数器**（仅在进程重启时重置为 0），专门记录请求总数、错误总数，配合 `rate(http_requests_total[5m])` 求每秒速率；像**货物库存、员工人数、当前内存占用、队列长度这类可升可降的瞬时状态值，必须使用 `Gauge`**！
-> 2. **`Histogram`（直方图）不是按年份画的普通条形图，而是服务端可聚合的分桶频次统计**：它把观测值（如接口耗时）按预设上界分桶计数（`_bucket{le="0.05"}`、`{le="0.1"}`...，Prometheus 3.0+ 还原生支持免手配边界的高精度指数桶 **Native Histograms**）。因为**落入同一个耗时区间的请求个数在多台机器之间是严格可相加的**，所以服务端可通过 `histogram_quantile(0.99, sum by (le) (rate(...)))` **精确算出整个 50 台实例集群全局真实的 P99 延迟**！
+> 2. **`Histogram`（直方图）不是按年份画的普通条形图，而是服务端可聚合的分桶频次统计**：它把观测值（如接口耗时）按预设上界分桶计数（`_bucket{le="0.05"}`、`{le="0.1"}`...，Prometheus 3.0+ 还原生支持免手配边界的高精度指数桶 **Native Histograms**）。虽然**相同边界（`le`）的桶计数在多台机器之间是严格可相加聚合的**，但请求落入分桶后桶内的具体耗时分布已丢失，因此服务端通过 `histogram_quantile(0.99, sum by (le) (rate(...)))` 假设桶内均匀分布并经**线性插值**得到的是整个 50 台实例集群全局 P99 的**估计值**（而非精确值）——其精度高度依赖贴合业务 SLO 的合理分桶设计，或直接启用 Native Histograms 借助指数桶控制相对误差。
 > 3. **`Summary` 严禁跨实例求平均/求和**：`Summary` 是在**单个客户端进程本地**直接算好 `quantile="0.99"` 的分位数值上报。统计学上**多个子样本的 P99 分位数绝对不能再求平均或求和**——因此一旦服务部署了多个副本，需要看集群整体 P99 时**必须选用 `Histogram` 而非 `Summary`**！
 
 ### 7.3.2 高基数标签（High Cardinality）雪崩陷阱 {#ch7-3-2}
@@ -111,7 +111,7 @@ Prometheus 采用基于服务发现主动拉取（HTTP Pull）的采集架构，
    - 待支付订单积压数会随创建上升、随支付下降，属于瞬时水位状态，严禁用单调递增的 `Counter`（`Counter` 接口根本不提供 `.dec()` 减法！）。**修复**：改为 **`Gauge` 类型** `order_unpaid_queue_current`。
 2. **错误二（对多实例客户端 `Summary` 分位数求平均，产生严重统计失真）**：
    - 假设 29 个空闲副本各自算出的 P99 都是 `10ms`，而 1 个承载了热点大租户流量的副本打了 90% 请求且全部卡到 `5000ms`——对 30 个副本的 `Summary` 求 `avg` 算出来仅约 `176ms`，彻底漏报严重故障！
-   - **修复**：改为 **`Histogram` 类型** `order_create_duration_seconds`（或启用 Native Histogram），在 Grafana 用服务端分桶聚合公式计算真实全局 P99：
+   - **修复**：改为 **`Histogram` 类型** `order_create_duration_seconds`（配合贴合 SLO 的桶边界，或启用 Native Histogram），在 Grafana 用服务端分桶聚合公式估算全局 P99（注意经典直方图经 `histogram_quantile` 线性插值得到的是**估计值**，需避免桶宽过大导致插值失真）：
      ```text
      histogram_quantile(0.99, sum by (le) (rate(order_create_duration_seconds_bucket[5m])))
      ```
@@ -133,12 +133,21 @@ Prometheus 采用基于服务发现主动拉取（HTTP Pull）的采集架构，
    - 但 Go BFF 业务进程在处理该请求并新建 `http.NewRequest` 调用下游 Java 商品服务时，**没有将上游 `r.Context()` / 入站 Header 中的追踪头传递给下游出站请求**！
    - 结果当出站请求经过 BFF Pod 的出站 Envoy 边车时，Envoy 看到请求头里没有任何 `traceparent`，只能误以为这是一次全新的源头调用，重新生成了一个毫无关联的新 `TraceId`！
 2. **Go BFF 最小化上下文透传修复代码**：
-   - 标准生产做法是直接为 `http.Server` 和出站 `http.Client` 挂载 `otelhttp.NewHandler` 与 `otelhttp.NewTransport`（自动注入全局 `propagation.TraceContext{}` 提取与写回 `traceparent` / `tracestate`）：
+   - 标准生产做法是先**显式注册 W3C `TraceContext` 传播器**（OpenTelemetry Go 默认全局 `TextMapPropagator` 是空操作 no-op，若不显式初始化，仅包装 Handler/Transport **不会**提取或注入 `traceparent`！），再为 `http.Server` 和出站 `http.Client` 挂载 `otelhttp.NewHandler` 与 `otelhttp.NewTransport`（或在二者中分别传入 `otelhttp.WithPropagators(...)`）。下例使用 `go.opentelemetry.io/otel`、`go.opentelemetry.io/otel/propagation` 与 `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp`：
      ```go
-     // 入站：自动从 Header 提取 traceparent 注入 req.Context()
+     // 启动初始化阶段：显式安装 W3C TraceContext 传播器（也可通过 otelhttp.WithPropagators 逐个传入）
+     otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+         propagation.TraceContext{},
+         propagation.Baggage{},
+     ))
+
+     // 入站：从入站 Header 提取 traceparent / tracestate 注入 req.Context()
      mux := otelhttp.NewHandler(bizHandler, "bff-server")
 
-     // 出站：创建下游请求时务必传入携带追踪上下文的 req.Context()，由 otelhttp Transport 自动写回 traceparent 头！
+     // 出站：使用 otelhttp.NewTransport 包装 Transport，并传入携带追踪上下文的 req.Context() 自动写回 traceparent 头
+     otelHTTPClient := &http.Client{
+         Transport: otelhttp.NewTransport(http.DefaultTransport),
+     }
      outReq, err := http.NewRequestWithContext(inReq.Context(), http.MethodGet, productURL, nil)
      resp, err := otelHTTPClient.Do(outReq)
      ```

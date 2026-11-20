@@ -51,8 +51,11 @@ return 1
 # 1. 注册名为 stock_lib 的服务端持久化函数库（自动写入 AOF 并同步给所有从库）
 redis-cli FUNCTION LOAD "#!lua name=stock_lib
 redis.register_function('deduct_sku', function(keys, args)
-  local remain = tonumber(redis.call('HGET', keys[1], 'avail') or '0')
   local buy = tonumber(args[1])
+  if not buy or buy <= 0 or math.floor(buy) ~= buy then
+    return redis.error_reply('ERR invalid buy quantity')
+  end
+  local remain = tonumber(redis.call('HGET', keys[1], 'avail') or '0')
   if remain < buy then return 0 end
   redis.call('HINCRBY', keys[1], 'avail', -buy)
   redis.call('HINCRBY', keys[1], 'sold', buy)
@@ -113,7 +116,9 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 | **持久性（D）** | 完全取决于持久化策略：仅在 `appendfsync always`（或紧跟 `WAITAOF`）下确认落盘，默认 `everysec` 仍有 1 秒丢数窗口 |
 
 > [!TIP]
-> **现代开发准则**：由于 `MULTI`/`EXEC + WATCH` 既无运行期回滚，又无法读取前一步结果做分支判断，且高并发下 `WATCH` 乐观锁冲突会导致海量无效重试耗尽吞吐，**生产中凡涉及多步原子读写逻辑，一律优先使用 Redis Functions（`FCALL`）或 Lua 脚本替代 `MULTI`/`EXEC`**。
+> **现代开发准则与脚本“无回滚”铁律**：由于 `MULTI`/`EXEC + WATCH` 既无运行期回滚，又无法读取前一步结果做分支判断，且高并发下 `WATCH` 乐观锁冲突会导致海量无效重试耗尽吞吐，**生产中凡涉及多步原子读写逻辑，一律优先使用 Redis Functions（`FCALL`）或 Lua 脚本替代 `MULTI`/`EXEC`**。
+>
+> 但务必牢记：**Lua 脚本与 Redis Functions 同样没有事务回滚机制**！脚本执行只保证**隔离性**（单线程串行执行，期间绝不会穿插其他客户端命令）；如果脚本运行到中途因错误中断（例如前面已执行了 `HINCRBY` 扣减库存，后面操作某个键时抛出 `WRONGTYPE` 或参数非法错误），**报错之前已经成功执行的写入命令绝不会被回滚**！因此，生产脚本必须在**开头先完成全部参数合法性、数值范围与目标键数据类型（如 `TYPE`）校验**，确认无误后再集中执行写操作（确需捕获可恢复错误时改用 `redis.pcall`）。
 
 ### 8.3.2 高并发秒杀流量漏斗、库存子键分片与原子扣减闭环 {#ch8-3-2}
 
@@ -180,47 +185,73 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 
 ### 练习 2：设计防重复下单、防超卖少卖且支持超时回补的秒杀函数库
 
-某限量球鞋总库存 `1000` 双，要求**同一用户 `uid` 限购 `1` 双**，且超时 15 分钟未支付需安全回补库存（防止网络重发导致同一笔取消订单重复回补把总库存加超！）。请设计所需的 Redis 键结构，并编写包含 `try_seckill`（抢购扣减）与 `rollback_seckill`（幂等回补）两个函数的 Redis Function 库。
+某限量球鞋总库存 `1000` 双，要求**同一用户 `uid` 限购 `1` 双**，且超时 15 分钟未支付需安全回补库存（既要防止 MQ 重复投递导致同一笔取消订单重复回补把总库存加超，也要防止“用户取消订单 A 后重新抢到订单 B，此时订单 A 的延迟/重复取消消息到达误删订单 B 占位并多加库存”）。请设计所需的 Redis 键结构，并编写包含 `try_seckill`（抢购扣减）与 `rollback_seckill`（幂等回补）两个函数的 Redis Function 库。
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **键结构设计（单活动同槽原子操作）**：
+1. **键结构设计（单活动同槽原子操作 + 订单号精确匹配）**：
    - 若单商品并发在单节点可承载范围（如 `< 8 万 QPS`），为保证“库存扣减 + 用户限购判重 + 订单状态登记”三步绝对原子，可使用活动 ID 作为 Hash Tag 使两键落在同一槽：
      - 库存 Hash 键 `seckill:{act_88}:stock`：包含字段 `avail`（初值 `1000`）与 `sold`（初值 `0`）；
-     - 已购用户与状态 Hash 键 `seckill:{act_88}:orders`：`field` 为 `uid`，`value` 为状态——`"LOCKED"` 表示已锁库存待支付，取消后删除该 field 以允许用户重抢，同时凭该 field 存在性保证**幂等回补**，绝不重复加库存！
+     - 已购用户与订单状态 Hash 键 `seckill:{act_88}:orders`：`field` 为 `uid`，`value` 存为 **`<order_id>:LOCKED`**（支付成功后由支付回调更新为 `<order_id>:PAID`）。
+   - **两条核心防错原则**：
+     1. **回补必须同时匹配 `order_id` 与可取消状态 `LOCKED`**（若只存 `uid -> "LOCKED"`，当用户取消订单 A 并重新抢到订单 B 后，订单 A 的迟到/重复取消消息仍会看到 `"LOCKED"`，从而误删订单 B 的占位并多加一件库存！）；
+     2. **服务端脚本固定数量为 `1`，绝不信任客户端传入的扣减/回补数量**（因为业务明确规定每单限购 1 双），并在脚本开头先做参数与键类型校验，防止中途报 `WRONGTYPE` 导致前置写入无法回滚。
 2. **完整 Redis Function 库实现**：
    ```lua
    #!lua name=seckill_lib
 
-   -- KEYS[1]=库存Hash, KEYS[2]=订单状态Hash; ARGV[1]=uid, ARGV[2]=购买件数(1)
+   -- 前置校验：确保键与参数完整且库存/订单键为 hash 或尚未创建（防止中途 WRONGTYPE 留下半截写入）
+   local function validate_inputs(keys, uid, order_id)
+     if #keys < 2 then
+       return 'ERR expected 2 keys'
+     end
+     if not uid or uid == '' or not order_id or order_id == '' then
+       return 'ERR invalid uid or order_id'
+     end
+     local t1 = redis.call('TYPE', keys[1]).ok
+     local t2 = redis.call('TYPE', keys[2]).ok
+     if (t1 ~= 'hash') or (t2 ~= 'hash' and t2 ~= 'none') then
+       return 'ERR unexpected key type'
+     end
+     return nil
+   end
+
+   -- KEYS[1]=库存Hash, KEYS[2]=订单状态Hash; ARGV[1]=uid, ARGV[2]=order_id
+   -- 限购 1 件场景由服务端脚本固定扣减 1，不接受客户端传入数量
    -- 返回值：1=抢购成功, -1=重复购买, 0=库存不足
    redis.register_function('try_seckill', function(keys, args)
-     local uid = args[1]
-     local buy = tonumber(args[2])
+     local uid, order_id = args[1], args[2]
+     local err = validate_inputs(keys, uid, order_id)
+     if err then return redis.error_reply(err) end
+
      if redis.call('HEXISTS', keys[2], uid) == 1 then
        return -1
      end
      local avail = tonumber(redis.call('HGET', keys[1], 'avail') or '0')
-     if avail < buy then
+     if avail < 1 then
        return 0
      end
-     redis.call('HINCRBY', keys[1], 'avail', -buy)
-     redis.call('HINCRBY', keys[1], 'sold', buy)
-     redis.call('HSET', keys[2], uid, 'LOCKED')
+     redis.call('HINCRBY', keys[1], 'avail', -1)
+     redis.call('HINCRBY', keys[1], 'sold', 1)
+     redis.call('HSET', keys[2], uid, order_id .. ':LOCKED')
      return 1
    end)
 
-   -- 幂等取消回补：仅当订单处于 LOCKED 状态时才删除状态并归还库存，防 MQ 重复投递多加库存！
+   -- 幂等取消回补：必须同时匹配 order_id 与 LOCKED 状态才删除占位并固定回补 1 件
+   -- 既防同一订单重复取消，也防旧订单 A 的迟到取消消息误删新订单 B 或已支付订单！
    redis.register_function('rollback_seckill', function(keys, args)
-     local uid = args[1]
-     local buy = tonumber(args[2])
-     if redis.call('HGET', keys[2], uid) ~= 'LOCKED' then
+     local uid, order_id = args[1], args[2]
+     local err = validate_inputs(keys, uid, order_id)
+     if err then return redis.error_reply(err) end
+
+     local expected = order_id .. ':LOCKED'
+     if redis.call('HGET', keys[2], uid) ~= expected then
        return 0
      end
      redis.call('HDEL', keys[2], uid)
-     redis.call('HINCRBY', keys[1], 'avail', buy)
-     redis.call('HINCRBY', keys[1], 'sold', -buy)
+     redis.call('HINCRBY', keys[1], 'avail', 1)
+     redis.call('HINCRBY', keys[1], 'sold', -1)
      return 1
    end)
    ```
@@ -262,7 +293,7 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 
 1. **执行结果**：最终 **`a = "1"`，`b = "2"`**！
    - 原因：`LPOP a` 语法本身完全合法，入队阶段均返回 `QUEUED`；直到 `EXEC` 真正执行时，第 1 条 `SET a 1` 把 `a` 设为了字符串，第 2 条 `LPOP a` 触发运行期类型错误 `WRONGTYPE` 报错跳过，而 **Redis 没有回滚机制**，不仅第 1 条不会回滚，第 3 条 `SET b 2` 也会正常执行成功！只有入队阶段就写错命令名（如 `SETX a 1`）才会触发 `EXECABORT` 整批放弃。
-2. **推荐 Lua / Redis Functions 的三大理由**：① 只需 **1 次网络 RTT**（`MULTI` 需逐条发送入队命令）；② 支持在服务端读取前一步返回值做 **`if/else` 条件判断**（如先判余额够不够再扣减，避免错误命令运行期半途失败）；③ 无需依赖高并发下极易因冲突导致大批事务重试失败的 `WATCH` 乐观锁，吞吐量与可维护性远超 `MULTI`/`EXEC`。
+2. **推荐 Lua / Redis Functions 的三大理由（及共同边界）**：① 只需 **1 次网络 RTT**（`MULTI` 需逐条发送入队命令）；② 支持在服务端读取前一步返回值做 **`if/else` 条件判断**（如先判余额够不够再扣减，避免错误命令运行期半途失败）；③ 无需依赖高并发下极易因冲突导致大批事务重试失败的 `WATCH` 乐观锁，吞吐量与可维护性远超 `MULTI`/`EXEC`。**但需注意**：Lua / Functions 同样只提供执行隔离性而**不支持中途报错回滚**，因此在任何写命令之前仍必须在脚本开头完成参数、数量与键类型的完整校验。
 
 </details>
 

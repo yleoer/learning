@@ -171,7 +171,7 @@ const architectureSidebar = [
     items: [
       { text: '第 4 章 透明多级分流：HTTP/3、CDN、四七层均衡与多级缓存', link: '/books/architecture/chapter-04' },
       { text: '第 5 章 服务发现、网关路由、容错隔离与自适应限流', link: '/books/architecture/chapter-05' },
-      { text: '第 6 章 认证授权（OAuth 2.1）、传输密码学（TLS 1.3）与零信任架构', link: '/books/architecture/chapter-06' },
+      { text: '第 6 章 认证授权（OAuth 2.0 / RFC 9700）、传输密码学（TLS 1.3）与零信任架构', link: '/books/architecture/chapter-06' },
       { text: '第 7 章 可观测性体系：OpenTelemetry、日志、链路追踪与聚合度量', link: '/books/architecture/chapter-07' },
     ],
   },

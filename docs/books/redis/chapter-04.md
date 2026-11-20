@@ -90,14 +90,14 @@ active-defrag-cycle-max 25         # 最高不超过 25% CPU，严防挤占主�
 
 接到“Redis 响应变慢”告警时，切忌盲目猜想，应按以下科学链路逐层锁定根因：
 
-1. **先测宿主机固有延迟基线**：在 Redis 服务端本机运行 `redis-cli --intrinsic-latency 120` 测量操作系统调度与虚拟化层的固有最大延迟；若客户端观测延迟达到基线的 **2 倍以上**且排除了客户端侧网络拥塞，则确认为服务端变慢。
+1. **先测宿主机固有延迟基线，再分层对比定位**：在 Redis 服务端本机运行 `redis-cli --intrinsic-latency 120`，测量**宿主机内核调度、CPU 抢占与虚拟化层的固有停顿基线**（该测试与 Redis 进程和网络无关；若本机固有延迟本身就达毫秒级，说明瓶颈先出在 OS/宿主机层）。需注意：**不能简单以“客户端延迟超过 `--intrinsic-latency` 的 2 倍”机械断定服务端变慢**——客户端观测延迟还包含跨机网络 RTT、连接池排队、请求排队与命令执行耗时（例如内网 RTT 为 `0.5ms` 而本机固有延迟仅 `0.05ms` 时，正常访问延迟天然远超 2 倍）。正确做法是同时对比“服务端本机回环 `redis-cli --latency` 延迟”“客户端侧历史正常基线”以及服务端 `SLOWLOG` / `LATENCY LATEST` 指标，区分究竟是网络侧抖动还是 Redis 服务端变慢。
 2. **慢查询日志与延迟监控器联查（注意单位差异！）**：
    - `slowlog-log-slower-than` 单位是 **微秒（`μs`）**，默认 `10000`（即 `10ms`），生产建议调为 `2000～5000` 并将队列长度 `slowlog-max-len` 扩至 `1000`，用 `SLOWLOG GET 20` 抓出 `O(N)` 慢命令。
    - `latency-monitor-threshold` 单位是 **毫秒（`ms`）**（订正原书第 22 讲误写为微秒的错误！），建议设为 `5～20`（即 `5～20ms`），通过 `LATENCY LATEST` 捕捉 `fork`、`aof-fsync-always` 或集中过期事件。
 3. **打散大批键同秒集中过期**：Redis 每 `100ms` 主动采样检查过期键（6.0+ 辅以按到期时间排序的 Radix Tree 加速定位），一旦单轮过期比例超过 **25%** 就会循环清理直到低于阈值或触及时间上限。批量缓存预热时**必须在基础 TTL 上叠加随机秒数抖动**。
 4. **彻查操作系统 Swap 与透明大页（THP）**：
    - 查 `/proc/$(pidof redis-server)/smaps | egrep '^(Size|Swap)'`，确认 `Swap` 全为 `0 kB`；
-   - Linux **透明大页（Transparent Huge Pages，`2 MiB`）必须永久关闭**！否则 `BGSAVE` 写时复制期间，主线程哪怕只修改 `100` 字节键值，内核也必须整页复制 `2 MiB`（比常规 `4 KiB` 页放大 **512 倍**）：
+   - Linux **透明大页（Transparent Huge Pages，`2 MiB`）在生产环境仍建议永久关闭**！启用 THP 后，在 `BGSAVE` / `BGREWRITEAOF` 写时复制（COW）期间，即使主线程只修改了 `100` 字节的小键值，内核也可能**整页复制 `2 MiB` 大页**（相对常规 `4 KiB` 页最高放大 512 倍）或触发**大页分裂（split）**带来页表锁争用与停顿，叠加后台 `khugepaged` 内存规整极易放大 COW 延迟毛刺与内存占用：
 
 ```bash
 # 立即关闭 THP 与大页碎片整理（注意重定向符 >，并写入 rc.local / systemd 持久化）
@@ -167,7 +167,7 @@ echo never > /sys/kernel/mm/transparent_hugepage/defrag
    - **三重叠加根因**：
      ① `SLOWLOG` 为空但固定整点 02:00 卡顿，典型诱因是凌晨定时批处理写入的缓存键设置了相同的固定 TTL 引发**集中主动过期清理**，或凌晨 02:00 触发了定时 `BGSAVE` / `BGREWRITEAOF`；
      ② **`mem_fragmentation_ratio = 0.82 < 1.0`** 明确证实宿主机物理内存不足，Redis 部分内存页已被挤入磁盘 **Swap**，每次访问或过期扫描触及换出页都触发毫秒级磁盘读；
-     ③ 宿主机开启了 **THP `[always]`**，凌晨持久化子进程触发 COW 时以 `2 MiB` 大页粒度疯狂拷贝内存，进一步加剧 Swap 与主线程停顿！
+     ③ 宿主机开启了 **THP `[always]`**，凌晨持久化子进程触发 COW 时，内核对共享 `2 MiB` 大页执行整页复制或大页分裂（并叠加 `khugepaged` 内存规整），进一步放大内存占用、Swap 与主线程停顿！
    - **处置**：① 立即执行 `echo never > /sys/kernel/mm/transparent_hugepage/enabled` 关闭 THP；② 排查 `/proc/<pid>/smaps` 扩容宿主机内存或迁移同机高内存进程彻底消除 Swap；③ 在业务端为凌晨批处理键的 `EXPIRE` 增加 `0～300s` 随机偏移打散过期峰值，并开启 `lazyfree-lazy-expire yes`。
 
 </details>
@@ -193,10 +193,10 @@ echo never > /sys/kernel/mm/transparent_hugepage/defrag
 <details>
 <summary>查看参考答案</summary>
 
-因为 THP 会将内存页粒度从常规的 **`4 KiB` 放大 512 倍至 `2 MiB`**，严重恶化 `BGSAVE` 与 `BGREWRITEAOF` 期间的**写时复制**（Copy-On-Write）开销：
+因为 THP 会将内存页粒度从常规的 **`4 KiB` 扩大至 `2 MiB`**，显著放大 `BGSAVE` 与 `BGREWRITEAOF` 期间的**写时复制**（Copy-On-Write）开销并引入后台内存规整抖动：
 
-1. **延迟毛刺**：持久化子进程运行期间，客户端哪怕执行一条只修改 `16` 字节的 `INCR` 命令，内核触发写保护中断后也必须在主线程路径上同步分配并复制整整 **`2 MiB`** 物理内存页，导致单次微秒级写操作骤变为毫秒级阻塞。
-2. **内存暴涨 OOM**：少量离散的随机写操作即可迅速污染大量 `2 MiB` 大页，使实例物理内存占用瞬间翻倍冲破机器上限。
+1. **延迟毛刺**：持久化子进程运行期间，客户端即使只修改少量字节（如 `INCR`），内核处理共享 `2 MiB` 大页写保护缺页时，可能**分配并复制整张 `2 MiB` 大页**，也可能将其**分裂（split）为 `4 KiB` 页**（伴随页表锁争用与分裂开销），再加上后台 `khugepaged` 内存规整，极易使原本微秒级的写操作出现毫秒级延迟毛刺。
+2. **内存占用放大风险**：在发生大页整页复制的场景下，少量离散的随机写操作即可迅速污染大量 `2 MiB` 大页，显著推高实例物理内存占用甚至触发 OOM。因此 Redis 生产环境仍建议关闭 THP（将 `enabled` 与 `defrag` 均设为 `never`）。
 
 </details>
 

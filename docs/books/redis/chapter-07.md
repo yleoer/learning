@@ -38,6 +38,9 @@ description: 深入剖析旁路缓存双写一致性时序、服务端协助客�
 1. **默认精确追踪模式（`CLIENT TRACKING ON`）**：服务端在全局追踪表中记录每个客户端读取过的键；当该键被任何客户端修改、删除或过期淘汰时，服务端向读过它的客户端发送**一次性（one-shot）** `invalidate` 消息并清理该记录（客户端下次重读后才重新注册追踪，极大节省服务端内存）。
 2. **前缀广播模式（`CLIENT TRACKING ON BCAST PREFIX cfg: PREFIX hot:`）**：服务端无需逐键记录谁读过什么，客户端仅声明关注的键前缀；凡匹配前缀的键发生变更，服务端直接向所有订阅该前缀的客户端广播失效通知，非常适合配置字典与商品基础信息本地缓存。
 
+> [!WARNING]
+> **追踪连接断开的失效通知丢失与恢复铁律**：Redis 仅对当前存活连接维护追踪状态，**一旦追踪连接（或 RESP 2 模式下通过 `REDIRECT` 指定的辅助订阅连接）发生断连，断线期间发生的所有键变更都不会补发失效通知**（RESP 2 辅助连接断开时，主连接会收到 `tracking-redir-broken` 提示）。按 Redis 官方实践，客户端必须在连接断开/重连回调中完成两步兜底：① **立即清空受影响的本地缓存**（防止继续服务断线窗口内漏收失效通知的陈旧数据）；② **重连后重新执行 `CLIENT TRACKING ON`（携带原 `BCAST`/`PREFIX` 等参数，RESP 2 下需重新订阅 `__redis__:invalidate` 并绑定新 `REDIRECT` 连接 ID）** 以恢复追踪注册，同时建议为本地缓存设置较短的兜底 TTL。
+
 ## 7.2 8 种内存淘汰策略与近似 LRU / LFU 底层机制 {#ch7-2}
 
 ### 7.2.1 容量规划与 8 种 maxmemory-policy 选型法则 {#ch7-2-1}
@@ -121,7 +124,7 @@ CF.DEL cf:valid_users u_10086
    - `t4`：读线程 B 将刚查到的旧价执行 `SET price:101 299 EX 86400` 写回 Redis！自此缓存被旧值 `299` 锁死整整 24 小时。
 2. **L1 + L2 + MySQL 多级一致性闭环方案**：
    - **调整写路径为“只写 MySQL + Binlog 异步删 L2”**：改价接口仅执行 MySQL 事务更新 `price = 199`；部署 Canal 监听该表 Binlog 投递 MQ，消费者可靠重试执行 `DEL price:101` 删除 Redis L2 缓存。
-   - **打通 L2 -> L1 毫秒级广播失效**：所有商品服务实例连接 Redis 8 时执行 `HELLO 3` 与 **`CLIENT TRACKING ON BCAST PREFIX price:`**；一旦 Canal 消费者删掉（或修改）Redis 中的 `price:101`，Redis 立即通过 RESP 3 Push 通道向全部业务实例推送 `invalidate` 消息，各实例回调立即驱逐本地 Caffeine 中的 `price:101`（同时本地 Caffeine 设 `30s` 兜底过期时间防极端断连）。
+   - **打通 L2 -> L1 毫秒级广播失效与断线恢复闭环**：所有商品服务实例连接 Redis 8 时执行 `HELLO 3` 与 **`CLIENT TRACKING ON BCAST PREFIX price:`**；一旦 Canal 消费者删掉（或修改）Redis 中的 `price:101`，Redis 立即通过 RESP 3 Push 通道向全部业务实例推送 `invalidate` 消息，各实例回调立即驱逐本地 Caffeine 中的 `price:101`。**关键容错**：必须在客户端注册连接断开/重连回调——追踪连接断开期间可能漏收失效通知，**连接恢复时必须立即清空受影响的本地缓存（如 `price:*` 对应的本地价格缓存），并在重连后重新执行 `HELLO 3` 与 `CLIENT TRACKING ON BCAST PREFIX price:` 重新注册追踪**（同时保留本地 Caffeine `30s` 兜底过期时间作为最后防线）。
 
 </details>
 

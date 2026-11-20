@@ -24,7 +24,7 @@ HTTP 是当今互联网最核心的应用层协议。原书《图解网络》HTT
 | **`1xx` 信息响应** | `101 Switching Protocols`<br>**`103 Early Hints`（RFC 8297）** | 纠正原书“1xx 很少用”：`101` 用于 HTTP/1.1 升级 WebSocket；**`103 Early Hints`** 允许服务端在主 HTML 尚未生成完前提前发预加载头，现已正式取代被废弃的 HTTP/2 Server Push |
 | **`2xx` 成功** | `200 OK`、`204 No Content`、`206 Partial Content` | `206` 配合 `Range` / `Content-Range` 实现断点续传与视频分片拖放 |
 | **`3xx` 重定向** | `301`、`302`、`304`、**`307`**、**`308`** | `301`（永久）/ `302`（临时）在历史浏览器实现中常将 `POST` 改为 `GET`；**`307`（临时）与 `308`（永久）**严格规定**禁止改变原请求方法与请求体**；`304 Not Modified` 为协商缓存命中 |
-| **`4xx` 客户端错误** | `400`、`401`、`403`、`404`、`405`、`425`、`429` | 区分 `401 Unauthorized`（未认证）与 `403 Forbidden`（已认证但无权限）；`425 Too Early` 用于拒绝有重放风险的 TLS 1.3 0-RTT 请求；`429 Too Many Requests` 用于限流 |
+| **`4xx` 客户端错误** | `400`、`401`、`403`、`404`、`405`、`425`、`429` | 区分 `401 Unauthorized`（缺少有效身份凭证，响应应带 `WWW-Authenticate`）与 `403 Forbidden`（服务端拒绝执行请求，既可能因权限不足，也可能与身份无关如 IP 封禁，不能据此断定已登录）；`425 Too Early` 用于拒绝有重放风险的 TLS 1.3 0-RTT 请求；`429 Too Many Requests` 用于限流 |
 | **`5xx` 服务端错误** | `500`、`502 Bad Gateway`、`503 Service Unavailable`、`504 Gateway Timeout` | `502` 指网关从上游收到无效响应；`504` 指网关等待上游响应超时 |
 
 ### 6.1.2 `GET` vs `POST`：安全、幂等与常见误区 {#ch6-1-2}
@@ -124,7 +124,7 @@ HTTP/1.1 每次请求都重复明文发送动辄数百至上千字节的 `User-A
 
 1. **包编号（Packet Number）与流偏移（Stream Offset）彻底解耦**：
    - 每个 QUIC 包携带**严格单调递增的 Packet Number**（按 Initial、Handshake、Application Data 划分 **3 个独立编号空间**）——即便重传同一份应用数据，也会分配一个全新的、更大的 Packet Number，彻底消除 TCP 重传 RTT 采样歧义，使丢包与 RTT 计算精确无比。
-   - 包内承载多个 **Frame**（如 `STREAM` 帧携带 `Stream ID`、`Offset`、`Length`）。**重传包与原始包靠 `Stream ID + Offset` 识别同一份数据**。每个 Stream 拥有独立的有序重组空间，Stream 1 丢包绝不阻塞 Stream 2 的即时交付，彻底消灭**跨流队头阻塞**（注意：单个 Stream 内部仍保持有序，存在流内顺序等待）。
+   - 包内承载多个 **Frame**（如 `STREAM` 帧携带 `Stream ID`、`Offset`、`Length`）。**重传包与原始包靠 `Stream ID + Offset` 识别同一份数据**。每个 Stream 拥有独立的有序重组空间，Stream 1 丢包绝不阻塞 Stream 2 的即时交付，彻底消灭**跨流队头阻塞**（注意：单个 Stream 内部仍保持有序，且同一连接内的各条 Stream 仍共享连接级拥塞控制，丢包触发的降速依然会影响其他流吞吐）。
 2. **两级流量控制（重点勘误原书 4.18 节）**：
    - QUIC 在 RFC 9000 中使用标准帧 **`MAX_STREAM_DATA`**（单流流控）与 **`MAX_DATA`**（整条连接总流控），受阻时分别发 `STREAM_DATA_BLOCKED` / `DATA_BLOCKED`（原书 4.18 节混用了早期 Google gQUIC 的旧术语 `window_update`/`BlockFrame`）。
    - **纠正原书公式错误**：原书 4.18 节称“Connection 级接收窗口就是各个 Stream 接收窗口大小之和”，**这是错误的**！RFC 9000 §4.1 明确规定连接级上限（`MAX_DATA`）与流级上限（`MAX_STREAM_DATA`）是**两套独立配额**——各 Stream 上限之和通常会**大于**连接总上限（允许单条活跃流突发吃满额度，同时由连接总上限守住整体内存防线），连接可用额度 = `Connection_MAX_DATA - Σ(所有 Stream 已收到的最大偏移)`。

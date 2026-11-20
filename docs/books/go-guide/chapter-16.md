@@ -98,7 +98,7 @@ func (rt *RFC822ZTime) UnmarshalJSON(b []byte) error {
 
 ### 16.2.1 生产级 HTTP 客户端三要素 {#ch16-2-1}
 
-编写生产级出站调用的首要禁令是：**绝不直接调用包级 `http.Get`、`http.Post` 或裸用 `http.DefaultClient`**。因为默认客户端的 `Timeout` 为 `0`（永不超时），下游一旦挂死不回包，就会将本服务的协程与套接字耗尽。正确做法是在组件初始化时构造显式设好 `Timeout` 的 `*http.Client` 并并发复用；切勿每次发请求都新建 `&http.Transport{}`，否则会破坏底层连接池复用并泄漏空闲连接协程。下例导入 `"context"`、`"fmt"`、`"net/http"` 与 `"time"`：
+编写生产级出站调用的首要禁令是：**绝不直接调用包级 `http.Get`、`http.Post` 或裸用 `http.DefaultClient`**。因为默认客户端的 `Timeout` 为 `0`（永不超时），下游一旦挂死不回包，就会将本服务的协程与套接字耗尽。正确做法是在组件初始化时构造显式设好 `Timeout` 的 `*http.Client` 并并发复用；切勿每次发请求都新建 `&http.Transport{}`，否则会破坏底层连接池复用并泄漏空闲连接协程。下例导入 `"context"`、`"fmt"`、`"io"`、`"net/http"` 与 `"time"`：
 
 ```go
 var apiClient = &http.Client{Timeout: 10 * time.Second}
@@ -117,16 +117,18 @@ func fetchTodo(ctx context.Context, url string) error {
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096)) // 有限排空错误体，利于复用连接
 		return fmt.Errorf("unexpected status: %s", res.Status)
 	}
-	return nil
+	_, err = io.Copy(io.Discard, res.Body) // 实际业务中此处解码或读尽响应体至 EOF
+	return err
 }
 ```
 
 每次发起请求必须落实三要素：
 
 1. **绑定调用链上下文**：用 `http.NewRequestWithContext(ctx, ...)` 创建请求，使上游超时或取消能立即中断底层套接字等待，见[Context 传参规范](./chapter-14#ch14-1)。
-2. **无条件关闭响应体**：只要 `Do` 返回 `err == nil`，下一行必须立即写 `defer res.Body.Close()`，否则连接无法归还连接池复用。
+2. **读尽并无条件关闭响应体**：只要 `Do` 返回 `err == nil`，下一行必须立即写 `defer res.Body.Close()`。需特别注意，在 HTTP/1.x 下若希望将底层 Keep-Alive 长连接归还连接池复用，通常不仅要调用 `Close()`，还需将 `res.Body` **读尽至 `io.EOF`**——不消费响应体内容时（例如仅检查状态码或非 200 错误分支），可在关闭前执行 `io.Copy(io.Discard, res.Body)`（面对可能超大的响应体应配合 `io.LimitReader` 限制排空字节数，超限时直接关闭并重建连接更划算）；虽然标准库 `http.Transport` 关闭时也会在保守上限内异步尝试排空，但响应体未读尽且超出该上限时，底层连接仍会被直接关闭而无法复用。
 3. **显式校验 HTTP 状态码**：只要收到合法的 HTTP 响应报文，即便对方返回 `404` 或 `500`，`apiClient.Do` 返回的 `err` 依然是 `nil`。
 
 ### 16.2.2 ServeMux 增强路由（Go 1.22+）、超时配置与中间件 {#ch16-2-2}

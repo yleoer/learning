@@ -7,7 +7,7 @@ description: 穿透 Linux Namespaces 与 cgroups v2 内核机制、CRI/container
 
 ## 本章要点
 
-云原生架构得以将分布式复杂性对业务隐藏，前提是拥有一套标准化、可编程、随时可销毁重建的**不可变基础设施**。许多开发者每天编写 Dockerfile 与 Kubernetes YAML，却误以为“容器是一台轻量级虚拟机”，以致在遇到容器内 `top` 看到宿主机全量内存、Pod 莫名被内核 `OOMKilled` 或高优服务无法抢占 GPU 资源时束手无策。本章整合原书第 11 章、第 14 章与附录 B，全面对齐 **Kubernetes 1.32+ 与 Linux 6.x/7.x 内核标准**：首先穿透 Linux Namespaces、**cgroups v2 统一层级**与淘汰 `dockershim` 后的 **CRI + `containerd`** 调用链；随后剖析 Pod 原子模型、原生 Sidecar 容器与声明式控制回路；最后详解三级 QoS 驱逐与 **`Scheduling Framework` 调度流水线**。
+云原生架构得以将分布式复杂性对业务隐藏，前提是拥有一套标准化、可编程、随时可销毁重建的**不可变基础设施**。许多开发者每天编写 Dockerfile 与 Kubernetes YAML，却误以为“容器是一台轻量级虚拟机”，以致在遇到容器内 `top` 看到宿主机全量内存、Pod 莫名被内核 `OOMKilled` 或高优服务无法抢占 GPU 资源时束手无策。本章整合原书第 11 章、第 14 章与附录 B，全面对齐 **Kubernetes 1.32+ 与 Linux 6.x/7.x 内核标准**：首先穿透 Linux Namespaces、**cgroups v2 统一层级**与淘汰 `dockershim` 后的 **CRI + `containerd`** 调用链；随后剖析 Pod 原子模型、原生 Sidecar 容器与声明式控制回路；最后详解 QoS 等级、节点压力驱逐排序与 **`Scheduling Framework` 调度流水线**。
 
 > 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Docker 29.10、Linux/AMD64。
 
@@ -21,7 +21,7 @@ description: 穿透 Linux Namespaces 与 cgroups v2 内核机制、CRI/container
 2. **Linux Namespaces（8 类访问视图隔离）**：通过 `clone()` 系统调用标志隔离进程可见范围——包括 `Mount`（挂载点）、`UTS`（主机名）、`IPC`（进程间通信）、`PID`（独立进程号树——注意订正原书将容器初始化进程误写为 `0 号进程` 的笔误：内核调度空闲进程才是 PID 0，**用户态与容器内初始化入口进程恒为 `PID 1`**！）、`Network`（独立网卡/路由/端口栈）、`User`（容器内 root 映射为宿主机非特权普通 UID 防逃逸）、`Cgroup`（隔离 `/proc/self/cgroup` 防止容器窥探宿主机配额）以及 Linux 5.6 新增的 `Time`（注意订正原书误述：**Kubernetes Pod 默认并不创建独立 Time Namespace**，各容器直接共享宿主机内核时钟）。
 3. **cgroups v2（Control Groups v2 统一层级与 PSI 压力感知）**：原书写作时容器尚停留在各子系统各自挂载独立目录树的 cgroups v1；如今主流发行版（Ubuntu 22.04+、RHEL 9+）与 **Kubernetes 1.25+ 已全面转正 cgroups v2**（K8s 1.31+ 已推进弃用 v1）：
    - **单一统一树结构（Unified Hierarchy）**：消除了 v1 中一个进程不同线程分属不同子系统控制组导致的协同混乱，特别是打通了 **`memory` 与块设备 `io` 子系统的协同**——彻底解决了 v1 无法限制内核页缓存异步回写（Buffered Writeback）磁盘 I/O 的顽疾！
-   - **细粒度内存节流与 PSI**：在硬上限 `memory.max`（触线即 OOM）前新增软节流阈值 **`memory.high`** 平滑回收内存，并内置 **PSI（Pressure Stall Information）** 精确统计进程因等待 CPU、内存或 I/O 而停顿的时间占比。
+   - **细粒度内存节流与 PSI**：在硬上限 `memory.max`（触线后先尝试内存回收，回收仍无法满足分配时才触发 cgroup OOM Killer）前新增软节流阈值 **`memory.high`** 平滑回收内存，并内置 **PSI（Pressure Stall Information）** 精确统计进程因等待 CPU、内存或 I/O 而停顿的时间占比。
 
 ### 8.1.2 告别 Dockershim：OCI 标准与 kubelet → containerd 调用链 {#ch8-1-2}
 
@@ -64,15 +64,21 @@ Kubernetes 架构的灵魂是**声明式 API + 调谐控制循环**（Reconcilia
 Kubernetes 将计算资源严格区分为两类物理特性截然不同的维度，并拆分为**调度账本依据 `requests`** 与 **cgroups 硬上限 `limits`**（K8s 1.33+ 已支持 `InPlacePodVerticalScaling` 在线热修改 Pod CPU/内存配额而免重建 Pod！）：
 
 - **可压缩资源（CPU，单位 `1000m = 1 Core`）**：超限时仅通过 cgroups CFS 配额节流（Throttling）使进程变慢，**绝不会杀死进程**。
-- **不可压缩资源（Memory，单位二进制 `Mi` / `Gi`）**：容器内存一旦触碰 `limits` 立即被内核 **`OOMKilled`（退出码 `137`）**！
+- **不可压缩资源（Memory，单位二进制 `Mi` / `Gi`）**：当容器内存用量触及 cgroup v2 硬上限 `memory.max`（即 `limits.memory`）时，内核并非立刻 OOM，而是**先尝试内存回收**（例如回收可释放的页缓存）；**仅当回收后仍无法满足分配需求时，才会触发 cgroup OOM Killer** 终止容器内进程。需要注意，退出码 **`137`（`128 + 9`）仅表示进程收到 `SIGKILL`**（也可能是优雅停机超时被强杀或外部 `kill -9`），不能单凭 `137` 断定 OOM，诊断时必须结合 Pod 状态 `State.Terminated.Reason == OOMKilled` 或 cgroup v2 的 `memory.events`（`oom` / `oom_kill` 计数）加以确认。
 
-当宿主机整体可用物理内存跌破 `kubelet` 硬驱逐红线（如默认 `memory.available < 100Mi` 或磁盘 `nodefs.available < 10%`）时，系统严格按 Pod 配置自动推导出的**三级服务质量**（QoS Class）由低到高依次牺牲驱逐：
+当宿主机整体可用资源跌破 `kubelet` 驱逐红线（如默认硬驱逐阈值 `memory.available < 100Mi` 或磁盘 `nodefs.available < 10%`）时，**切勿误以为 `kubelet` 只是机械地按 `BestEffort → Burstable → Guaranteed` 固定顺序驱逐**！依据 Kubernetes 官方文档（Node-pressure Eviction — Pod selection for kubelet eviction），`kubelet` 在内存压力下的真实筛选与排序依次取决于三个维度（**仅凭 QoS 类别不能唯一决定两个 Pod 谁先被驱逐**）：
 
-| QoS 等级 | 自动判定充要条件 | 节点内存紧缺时的生存优先级与生产适用对象 |
+1. **用量是否超出 `requests`（最高权重分组）**：`kubelet` 先驱逐用量**超出 `requests`** 的 Pod——即所有 `BestEffort`（未声明 `requests`，视为 `0`，任何用量均超 `requests`）与**当前内存用量超过 `requests` 的 `Burstable`**；而 **`Guaranteed` 与当前用量未超 `requests` 的 `Burstable`** 同属后备分组，仅当驱逐前一组仍无法缓解压力（或系统守护进程超出预留配额）时才会被驱逐。
+2. **Pod 优先级（`PriorityClass` / Priority）**：在同一分组内，严格按 Pod Priority **从低到高**排序——例如一个高优先级的 `BestEffort` Pod，可能晚于同组中低优先级且超 `requests` 的 `Burstable` Pod 被驱逐；在后备分组中，同样仅按 Pod Priority 排序。
+3. **超出 `requests` 的用量大小**：在“超 `requests`”分组且优先级相同时，再按实际内存用量**超出 `requests` 的绝对量**从高到低排序（超得越多越先被驱逐）；`Guaranteed` 因用量不会超过 `requests`，仅在无其他可驱逐 Pod 时才会受节点压力驱逐影响。
+
+Pod 的三个 **QoS 等级**由其容器资源声明自动推导，决定了宿主机内核 OOM Killer 的 `oom_score_adj` 权重以及容器是否存在“用量超出 `requests`”的风险：
+
+| QoS 等级 | 自动判定充要条件 | 内核 OOM 权重、驱逐分组与生产适用对象 |
 | --- | --- | --- |
-| **`Guaranteed`**（最高保障） | Pod 内**每一个容器**都同时显式设置了 CPU 和 Memory，且 **`requests` 严格等于 `limits`** | **最后才被杀**（`oom_score_adj = -997`）；**核心交易服务、有状态中间件必选**！ |
-| **`Burstable`**（弹性突发） | 不满足 `Guaranteed`，但至少有一个容器设置了 CPU 或 Memory 的 `requests` 或 `limits` | 居中（按实际内存使用超出 `requests` 的比例排序驱逐）；适合普通无状态 Web 服务 |
-| **`BestEffort`**（尽力而为） | Pod 内所有容器**未设置任何** CPU 和 Memory 的 `requests` 与 `limits` | **第 1 批立即强杀牺牲**（`oom_score_adj = 1000`）；仅限随时可重跑的离线低优任务 |
+| **`Guaranteed`**（最高保障） | Pod 内**每一个容器**都同时显式设置了 CPU 和 Memory，且 **`requests` 严格等于 `limits`** | 内核 `oom_score_adj = -997`；内存用量不会超过 `requests`，始终处于后备驱逐分组（仅在无其他可驱逐 Pod 时受影响）；**核心交易服务、有状态中间件必选** |
+| **`Burstable`**（弹性突发） | 不满足 `Guaranteed`，但至少有一个容器设置了 CPU 或 Memory 的 `requests` 或 `limits` | 内核 `oom_score_adj` 按内存 `requests` 占节点总内存比例在 `2～999` 动态计算；**用量超过 `requests` 时与 `BestEffort` 同入第一批驱逐组**，未超 `requests` 时与 `Guaranteed` 同入后备组；适合普通无状态 Web 服务 |
+| **`BestEffort`**（尽力而为） | Pod 内所有容器**未设置任何** CPU 和 Memory 的 `requests` 与 `limits` | 内核 `oom_score_adj = 1000`；`requests` 视为 `0`，天然处于第一批驱逐组（但同组内仍需先比 `Pod Priority`，再比实际用量）；仅限随时可重跑的离线低优任务 |
 
 ### 8.3.2 kube-scheduler 双循环与统一调度框架（Scheduling Framework） {#ch8-3-2}
 
@@ -103,19 +109,22 @@ Kubernetes 将计算资源严格区分为两类物理特性截然不同的维度
 
 某 Kubernetes 集群（节点物理内存 `64 GiB`）出现两起容器异常重启：
 1. **故障 A**：某 Java 服务 Pod 配置了 `requests.memory: 2Gi`、`limits.memory: 4Gi`，启动脚本使用老旧写法根据宿主机 `/proc/meminfo` 计算堆大小（或未限制堆外直接内存），运行半小时后无任何应用报错日志便瞬间重启，`kubectl describe pod` 显示 `State: Terminated, Reason: OOMKilled, Exit Code: 137`。
-2. **故障 B**：某核心计费网关 Pod 配置了 `requests: {cpu: "2", memory: "4Gi"}`、`limits: {cpu: "4", memory: "4Gi"}`，运维满以为它内存设了 `requests == limits` 就是最高等级 `Guaranteed`；结果同节点批处理任务内存暴涨触发节点压力时，该核心网关竟然先于另一个小服务被 `kubelet` 驱逐（`Status: Evicted`）！
+2. **故障 B**：某核心计费网关 Pod 未绑定高 `PriorityClass`（默认优先级 `0`），配置了 `requests: {cpu: "2", memory: "2Gi"}`、`limits: {cpu: "4", memory: "4Gi"}`，实际运行内存涨到 `3.6 GiB`；运维原以为同节点还跑着一个高优先级（`PriorityClass` 更高）的 `BestEffort` 辅助任务，以及一个内存 `requests: 1Gi`、实际仅用 `600 MiB` 的 `Burstable` 小服务，自己的计费网关肯定不会先被驱逐。结果同节点批处理任务内存暴涨触发节点内存压力时，该核心计费网关竟然最先被 `kubelet` 驱逐（`Status: Evicted`）！
 
-请分别指出故障 A 和故障 B 的底层原因并给出精确修复方案。
+请分别指出故障 A 和故障 B 的底层原因（含退出码 `137` 的诊断依据与 `kubelet` 真实驱逐排序逻辑），并给出精确修复方案。
 
 <details>
 <summary>查看参考答案</summary>
 
 1. **故障 A 根因与修复**：
-   - **根因**：早期容器未隔离 `/proc/meminfo` 时程序误读宿主机 `64 GiB` 物理内存将 JVM 堆开得过大，或 JVM 虽配了 `-Xmx4g` 但忽略了 Metaspace、线程栈、Netty Direct Memory 与 glibc Arena 等堆外内存——只要容器内所有进程总物理内存触碰 cgroups v2 的 `memory.max = 4GiB` 硬红线，Linux 内核 OOM Killer 就会直接发 `SIGKILL (9)` 强杀进程（`128 + 9 = 137`，进程根本来不及写任何遗言日志！）。
+   - **根因与诊断要点**：早期容器未感知 cgroup 限额时程序误读宿主机 `64 GiB` 物理内存将 JVM 堆开得过大，或 JVM 虽配了 `-Xmx4g` 但忽略了 Metaspace、线程栈、Netty Direct Memory 与 glibc Arena 等堆外内存。当容器内进程总内存触及 cgroup v2 的 `memory.max = 4GiB` 时，内核会**先尝试内存回收**；因堆与堆外内存均为不可回收的活跃匿名页，回收后仍无法满足新分配请求，才触发 cgroup OOM Killer 发送 `SIGKILL (9)` 强杀进程（退出码 `128 + 9 = 137`，进程来不及输出关闭日志）。注意：**退出码 `137` 本身只说明收到了 `SIGKILL`**（也可能是优雅停机超时或外部强杀），此处正是结合 `State.Terminated.Reason == OOMKilled`（也可进一步核对 cgroup `memory.events` 中的 `oom` / `oom_kill` 计数）才确认属于 OOM。
    - **修复**：升级至容器感知完备的现代 JDK 21+，使用 `-XX:MaxRAMPercentage=70.0` 预留 30% 余量给堆外内存与页面缓存，避免把堆顶满容器 `limits`。
-2. **故障 B 根因与修复（极高频 QoS 判定踩坑点！）**：
-   - **根因**：成为 **`Guaranteed`** 的严格条件是 **Pod 内所有容器（含边车！）的 CPU 和 Memory 两项资源的 `requests` 都必须严格等于各自的 `limits`**！该计费网关虽然 `memory` 相等（`4Gi == 4Gi`），但 **CPU 配置成了 `requests: 2` != `limits: 4`**——导致整个 Pod 降级沦为了 **`Burstable`**，丧失了最高免死金牌！
-   - **修复**：将业务容器及 Pod 内所有边车容器的 CPU 与 Memory 均对齐设为相等（如 `requests: {cpu: "4", memory: "4Gi"}`、`limits: {cpu: "4", memory: "4Gi"}`），并为其绑定高优先级的 `PriorityClass`。
+2. **故障 B 根因与修复（极高频 QoS 与驱逐排序踩坑点！）**：
+   - **根因**：`kubelet` 内存压力驱逐**并非**简单按 `BestEffort → Burstable → Guaranteed` 固定排序，而是依次按 **① 用量是否超出 `requests` → ② `Pod Priority`（优先级）→ ③ 超出 `requests` 的用量大小** 判定：
+     - 计费网关未满足“Pod 内所有容器（含边车）的 CPU 和 Memory 均 `requests == limits`”，属于 `Burstable`，且实际内存 `3.6 GiB` 已**超出 `requests`（`2 GiB`）**，因此与 `BestEffort` 辅助任务同被划入**第一批驱逐候选组**；
+     - 那个实际仅用 `600 MiB`（`< 1 GiB`）的 `Burstable` 小服务因**未超 `requests`**，与 `Guaranteed` 同属后备分组，排在后面；
+     - 在第一批候选组内，先比较 **`Pod Priority`**：默认优先级（`0`）的计费网关优先级低于该高优先级 `BestEffort` 辅助任务，于是反而最先被驱逐！
+   - **修复**：一方面将计费网关主容器及 Pod 内所有边车容器的 CPU 与 Memory 统一配置为 `requests == limits`（如 `requests: {cpu: "4", memory: "4Gi"}`、`limits: {cpu: "4", memory: "4Gi"}`）锁定 **`Guaranteed`**（确保内存不超 `requests` 且获得内核 `oom_score_adj = -997` 保护）；另一方面必须为其绑定高于辅助任务的 **`PriorityClass`**。
 
 </details>
 

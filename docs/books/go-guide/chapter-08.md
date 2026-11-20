@@ -154,7 +154,7 @@ func inspect(v any) string {
 | --- | --- | --- |
 | 静态转换 `T(v)` | 编译期 | 底层兼容的具体类型之间转换；不能把接口直接强转为具体类型 |
 | 类型断言 `v, ok := x.(T)` | 运行期 | 检查接口 `x` 顶层的精确动态类型是否为 `T` 或满足接口 `T`；单值 `x.(T)` 失配会 `panic` |
-| 错误提取 `errors.AsType[E](err)` | 运行期 | Go 1.26+（标准库 `"errors"`）：沿 `%w` 包装链递归提取目标错误类型；**严禁对 `error` 直接用 `err.(T)` 或 `type switch`**，详见 [10.2.2 节](./chapter-10#ch10-2-2) |
+| 错误提取 `errors.AsType[E](err)` / `errors.As` | 运行期 | 沿 `%w` / `errors.Join` 包装链递归匹配目标错误类型或接口（`AsType` 为 Go 1.26+，标准库 `"errors"`）；仅关心最外层具体错误类型时可直接用类型断言，要在包装链中匹配目标类型时应使用 `errors.AsType` 或 `errors.As`，详见 [10.2.2 节](./chapter-10#ch10-2-2) |
 
 ## 8.5 函数适配器与构造函数依赖注入 {#ch8-5}
 

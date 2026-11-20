@@ -169,6 +169,11 @@ JOIN performance_schema.data_locks dl ON dl.ENGINE_LOCK_ID = w.BLOCKING_ENGINE_L
 
 当两个或多个事务在等待有向图（Wait-for Graph）中形成闭环时即发生**死锁**。InnoDB 默认开启 `innodb_deadlock_detect = ON`，在每次发生锁等待时即时深度优先搜索等待环路；一旦检出死锁，会比较环中各事务的**回滚权重 `trx_weight`**——即修改过的记录数与持有的锁结构数之和——**自动选择权重最小、回滚代价最低的事务作为牺牲者立即回滚**，并向其客户端抛出 `ERROR 1213 (40001)`。仅在秒杀等极端单行高并发竞争导致死锁检测消耗过高 CPU 时，才考虑评估关闭死锁检测并调小默认 `50` 秒的 `innodb_lock_wait_timeout`。
 
+应用层编写容错重试逻辑时，必须严格区分**死锁（`ERROR 1213`）**与**锁等待超时（`ERROR 1205`）**的回滚范围：
+
+- **`ERROR 1213`（Deadlock）**：InnoDB 已自动**回滚整个牺牲事务**并释放其持有的锁，应用层可直接从事务起点重新开启并重试整笔业务事务。
+- **`ERROR 1205`（Lock wait timeout exceeded）**：在默认配置 `innodb_rollback_on_timeout = OFF` 下，InnoDB **只回滚超时的那一条语句**，当前事务仍处于活跃状态，事务中先前已执行的修改与已持有的锁均未被回滚！若业务需要整笔重试，**必须先显式执行 `ROLLBACK` 结束当前事务**再重新开启，否则直接继续或误提交会导致部分写入残留、破坏原子性；仅当实例显式开启 `innodb_rollback_on_timeout = ON` 时，锁等待超时才会自动回滚整个事务。
+
 线上最高频的死锁并非简单的“反向锁两行”，而是由 **`X,GAP` 彼此兼容、却与 `X,GAP,INSERT_INTENTION` 互斥**触发的幂等校验死锁。以下为基于 `hero` 表 `{1, 3, 8, 15, 20}` 在 MySQL 8.4.13 上的真实复现时序：
 
 | 步序 | 会话 `T1 (trx 2318)` | 会话 `T2 (trx 2319)` | `data_locks` 锁状态演进与因果说明 |

@@ -153,7 +153,7 @@ $ govulncheck -mode=binary ./bin/app-linux-arm64
 针对不同操作系统、CPU 架构或特性开关按条件挑选源文件参与编译，Go 提供两套互补机制：
 
 1. **平台文件名后缀**：除去 `.go`（或测试后缀 `_test.go`）后，命名为 `*_GOOS`、`*_GOARCH` 或 **`*_GOOS_GOARCH`** 的文件仅在目标平台匹配时编译——双后缀顺序固定为**先操作系统、后架构**，例如 `sys_linux_arm64.go`、`sys_linux_arm64_test.go`。
-2. **`//go:build` 构建约束（Go 1.17+）**：置于文件顶部，支持 `&&`、`||`、`!` 与圆括号组合平台名、`unix`、`cgo`、最低版本标签（如 `go1.26`）或自定义标签。自定义标签默认不激活，比如用 `-tags=integration` 开启[集成测试隔离](./chapter-17#ch17-3)，或用 `//go:build ignore` 排除独立脚本。注意两条语法红线：**`//` 与 `go:build` 之间严禁有空格**，且 **`//go:build` 下方与 `package`（或包注释）之间必须留出至少一个空行**，否则会被误当作包文档注释而失效：
+2. **`//go:build` 构建约束（Go 1.17+）**：置于文件顶部（`package` 子句之前，且前面只能有空行或其他注释），支持 `&&`、`||`、`!` 与圆括号组合平台名、`unix`、`cgo`、最低版本标签（如 `go1.26`）或自定义标签。自定义标签默认不激活，比如用 `-tags=integration` 开启[集成测试隔离](./chapter-17#ch17-3)，或用 `//go:build ignore` 排除独立脚本。注意语法与格式规则：**`//` 与 `go:build` 之间严禁有空格**，且必须写在 `package` 子句之前——写在 `package` 之后才会失效，并触发 `go vet` 的 `buildtag` 检查报错（`misplaced //go:build comment`）。至于紧贴 `package`（无空行）的写法，构建标签本身依然生效且 `go vet` 不报错，但官方规范建议在 `//go:build` 下方留出空行以与包文档注释区分，`gofmt` 也会自动补齐该空行：
 
 ```go
 //go:build (linux && arm64) || (darwin && !ios)
@@ -266,13 +266,15 @@ func loadConfig() string {
 
 </details>
 
-### 面试题 2：文件名为 `sys_darwin_arm64.go`，顶部又写了 `//go:build darwin && !ios`，两者如何叠加？为何 `//go:build` 下方必须留空行？
+### 面试题 2：文件名为 `sys_darwin_arm64.go`，顶部又写了 `//go:build darwin && !ios`，两者如何叠加？`//go:build` 紧贴 `package` 或写在 `package` 之后分别会怎样？
 
 <details>
 <summary>查看参考答案</summary>
 
 1. **按逻辑“与（AND）”叠加**：文件必须同时满足文件名后缀与 `//go:build` 表达式才会参与编译。`sys_darwin_arm64.go` 遵循 `*_GOOS_GOARCH.go` 固定顺序，隐式要求 `darwin && arm64`；由于 `GOOS=ios` 默认也会激活 `darwin` 标签，叠加 `//go:build darwin && !ios` 后即可只在 macOS ARM64 下编译而在 iOS 下排除。
-2. **区分构建指令与包文档注释**：`//go:build` 下方必须与 `package` 子句或包注释留出至少一个空行，否则紧贴 `package` 的注释会被当作普通包文档注释解析而失效，`go vet` 的 `buildtag` 检查器也会对此报错。
+2. **位置规则与空行约定**：
+   - **紧贴 `package`（位于 `package` 之前、无空行）**：**构建标签依然生效**，且 `go vet` 不会报错；之所以规范要求下方留出空行，是为了将构建指令与包文档注释区分开，`gofmt` 也会自动补齐空行。
+   - **写在 `package` 之后**：**构建标签失效**（不再被当作构建约束解析），且 `go vet` 的 `buildtag` 检查器会报 `misplaced //go:build comment` 错误。
 
 </details>
 
