@@ -1,65 +1,71 @@
 ---
-title: Go 语言并发之道
-description: 以《Go语言并发之道》为主线，结合 Go 1.27.3 系统梳理并发模型、同步原语、组合模式、大规模治理与运行时诊断。
+title: 导读与速查索引
+description: 面向系统进阶与生产排障的 Go 并发编程知识体系、模块路线与高频模式速查表。
 ---
 
-# Go 语言并发之道
+# Go 语言并发之道：导读与速查索引
 
-本指南以 Katherine Cox-Buday 的《Go语言并发之道》（*Concurrency in Go*，于畅、马鑫、赵晨光译）为主线，结合 Go 官方语言规范、内存模型与 Go 1.27.3 标准库及运行时实现，系统整理 Go 并发编程的核心概念、同步原语、组合模式与生产治理方法。整理的目标不是逐页复刻原书文字，而是沿着原书提出的核心问题，将背后的机制推导、可验证代码与现代工程边界沉淀为一套可反复查阅和自测的知识体系。
+本指南以 Katherine Cox-Buday《Go语言并发之道》（*Concurrency in Go*，于畅、马鑫、赵晨光译）的核心脉络为基础，结合 Go 官方内存模型、标准库演进与本地实测（Go 1.27.4）按**知识域与工程尺度**重组精简为 **3 大模块、5 章**。
 
-阅读本专题前，建议已掌握 Go 的基础语法、函数与闭包、切片与映射、方法与接口以及错误处理。如需巩固语言基础，可先配合阅读 [Go 语言学习指南](../go-guide/)；本专题则聚焦于四个贯穿始终的问题：**可变状态由谁拥有、并发操作如何同步、异步任务何时退出、下游负载与故障如何被限制**。
+由于原书成书于 Go 1.8 时期，本指南在保留其建模思想、实测数据与架构权衡的同时，统一用现代 Go 特性重构代码并订正过时结论——包括以泛型 `[T any]` 与 `struct{}` 升级 `chan interface{}` 流水线、补齐 `sync.Pool` 两代 GC 回收边界、更正利特尔法则与复制请求勘误，以及更新 Go 1.14+ 信号异步抢占、Go 1.23+ 定时器自动回收与 Go 1.25+ 容器配额感知、`synctest`、`FlightRecorder` 等机制。
 
-## 章节导航
+## 与《Go 语言学习指南》的分工衔接 {#prerequisites}
 
-下表按原书 6 章与附录 A 的顺序组织。表中“原书页码范围”对应本地原书 PDF 的文件页序，便于对照查阅原书插图与上下文：
+为消除跨专题的基础语法重复，本指南定位为**并发建模、高阶编排、大规模治理与运行时原理**进阶专题，与站内[《Go 语言学习指南》](../go-guide/)直接衔接：
 
-| 章节 | 核心问题 | 原书页码范围 |
+- **基础语法与日常原语**：Goroutine 启动规则、通道读写与四状态基础、`select` 防空转、信号量背压、`WaitGroup.Go`、`sync.OnceValue`、互斥锁与 `atomic` 入门，详见[《Go 语言学习指南》第 13 章](../go-guide/chapter-13)。
+- **`context` 核心 API**：`Context` 四方法契约、`WithCancelCause`、`WithTimeout` 分层预算、`AfterFunc`、`WithoutCancel` 与私有键封装，详见[《Go 语言学习指南》第 14 章](../go-guide/chapter-14)。
+
+建议先掌握上述两章基础，再按下方三大模块深入并发深水区；日常开发遇到具体并发模式或线上故障时，可直接查阅速查索引直达对应小节。
+
+## 三大模块与五章路线 {#roadmap}
+
+| 模块 | 覆盖章节 | 核心解决的问题 |
 | --- | --- | --- |
-| [第 1 章 并发概述](./chapter-01) | 为什么并发代码容易出错？如何区分数据竞争、竞态条件与活性故障？ | PDF 第 12—35 页 |
-| [第 2 章 对代码建模：通信顺序进程](./chapter-02) | 并发与并行有何本质区别？如何依据状态所有权在通道与互斥锁之间抉择？ | PDF 第 36—49 页 |
-| [第 3 章 Go 语言并发组件](./chapter-03) | `goroutine`、`sync`、`channel` 与 `select` 各自提供怎样的同步契约？ | PDF 第 50—101 页 |
-| [第 4 章 Go 语言的并发模式](./chapter-04) | 如何把独立的并发原语组装成支持取消、流控与优雅收尾的流水线？ | PDF 第 102—171 页 |
-| [第 5 章 大规模并发](./chapter-05) | 在生产系统中如何设计错误传递、超时预算、心跳、对冲请求、限流与守卫重启？ | PDF 第 172—225 页 |
-| [第 6 章 goroutine 和 Go 语言运行时](./chapter-06) | Go 调度器如何通过 G-M-P 模型、工作窃取与异步抢占驱动成千上万个 goroutine？ | PDF 第 226—243 页 |
-| [附录 A 并发诊断与测试](./appendix-a) | 如何借助 `-race`、`pprof`、`goroutineleak`、`trace` 与 `testing/synctest` 定位问题并编写确定性测试？ | PDF 第 244—248 页 |
+| **一、理论基石与进阶原语** | [第 1 章](./chapter-01)～[第 2 章](./chapter-02) | 区分数据竞争与逻辑竞态，掌握死锁/活锁/饥饿诊断、Go 内存模型 `happens-before` 规则、CSP 选型决策树，以及 `sync.Cond`、`sync.Pool`、`RWMutex`/`Once` 深层陷阱与通道所有权契约 |
+| **二、通道编排与系统治理** | [第 3 章](./chapter-03)～[第 4 章](./chapter-04) | 运用词法约束消除同步开销，编排泛型流式 Pipeline、扇出扇入与 `or`/`orDone`/`tee`/`bridge` 组合子，落地利特尔法则容量估算、模块边界错误包装、双模式心跳、对冲复制请求、多层令牌桶限流与 Steward 协程自愈 |
+| **三、运行时调度与诊断** | [第 5 章](./chapter-05) | 剖析续体工作窃取算法、GMP 系统调用交接、Netpoller 与 `SIGURG` 信号异步抢占，掌握容器 `GOMAXPROCS` 动态配额、`GOTRACEBACK`、`pprof` 并发画像与 `FlightRecorder` 现场追踪 |
 
-## 版本基线与演进对照 {#version-policy}
+## 高频并发模式与排障速查索引 {#quick-index}
 
-原书出版于 Go 1.8—1.9 时期。此后 Go 语言规范、内存模型、标准库与运行时调度器经历了多次重要演进：泛型消除了并发管道对 `interface{}` 的依赖，紧循环不可抢占的历史局限已在 Go 1.14 解决，循环变量捕获与定时器通道语义分别在 Go 1.22 与 Go 1.23—1.27 发生根本变化，而 Go 1.25—1.27 又陆续引入了 `WaitGroup.Go`、容器感知 `GOMAXPROCS`、`errors.AsType`、`testing/synctest` 以及内置的 `goroutineleak` 剖析器。
-
-本指南以 **Go 1.27.3**（Windows/AMD64）为核对基线，扩展库示例基于 `golang.org/x/sync v0.25.0` 与 `golang.org/x/time v0.16.0` 验证。涉及有最低版本要求的语言特性、标准库 API 或运行时行为时，各章均在首次出现处标明起始支持版本，并注意区分**工具链版本**与 **`go.mod` 中的模块语言版本指令**。下表汇总了本指南对原书关键结论的校准与补充：
-
-| 原书内容或历史背景 | 本指南的校准与现代写法 |
+| 想查的模式 / 机制 / 线上故障 | 主场位置 |
 | --- | --- |
-| 混用“竞争条件”与“数据竞争”，缺乏形式化内存模型解释 | 严格区分数据竞争（Data Race）与业务竞态条件（Race Condition），结合 [Go 内存模型](./chapter-01#ch1-3)的 happens-before 关系解释可见性 |
-| “goroutine 几乎没有成本，无需担心创建数量” | 肯定其简化并发建模的价值，同时补齐内存、文件句柄与下游连接的[有界并发预算](./chapter-02#ch2-4) |
-| 泛化推荐 `RWMutex`，并将 `sync.Pool` 描述为固定容量的连接池 | 按临界区特征分析 `RWMutex` 读写争用，明确 [`sync.Pool`](./chapter-03#ch3-4) 是受 GC 支配的临时对象复用池而非长连接池 |
-| Go 1.14 之前的协作式调度：“紧循环无法被抢占” | 更新 [Go 1.14+ 信号异步抢占机制](./chapter-06#ch6-3)，同时区分“调度器抢占执行权”与“业务任务响应取消退出” |
-| 基于 `interface{}` 构建流水线与类型断言阶段 | 采用 **Go 1.18+** 泛型重写[生成器、流水线、扇入扇出与通道适配器](./chapter-04#ch4-4)，兼顾复用性与编译期类型安全 |
-| 循环闭包共享同一迭代变量 | 说明 **Go 1.22+**（模块声明 `go 1.22` 及以上）按次迭代创建循环变量的新规则，以及外部变量复用时的残留风险 |
-| 手动配对 `WaitGroup.Add`/`Done` 与包级 `sync.Once` 状态 | 补充 **Go 1.21+** `sync.OnceValue`/`OnceValues` 与 **Go 1.25+** [`WaitGroup.Go`](./chapter-03#ch3-2) |
-| 旧版 `golang.org/x/net/context` 与单一取消信号 | 统一使用标准库 `context`，并补充 **Go 1.20+** 取消原因（`WithCancelCause`）与 **Go 1.21+** `AfterFunc`、`WithoutCancel` |
-| 旧版 `time.Timer` 残留值排空与 `time.Tick` 泄漏 | 梳理 **Go 1.23—1.27** 定时器 GC 回收与同步通道演进（Go 1.27 已移除 `asynctimerchan` 旧开关） |
-| `GOMAXPROCS` 固定等于宿主机逻辑 CPU 数 | 补充 **Go 1.25+** Linux cgroup CPU 带宽感知、动态更新与 `runtime.SetDefaultGOMAXPROCS` |
-| 依赖放大 `time.Sleep` 或额外心跳通道对抗测试偶发超时 | 保留心跳在生产监控中的价值，补充 **Go 1.25—1.27** [`testing/synctest`](./appendix-a#cha-4) 虚拟时钟与 `httptest.NewTestServer` 内存网络测试 |
-| 仅靠 `goroutine` 快照人工排查泄漏 | 补充 **Go 1.26** 调度状态指标与 **Go 1.27** 正式内置的 [`goroutineleak` profile](./appendix-a#cha-3) 及 `tracebacklabels` |
+| 阿姆达尔定律、加锁后为何仍有竞争条件、原子性作用域边界 | [1.1 阿姆达尔定律与原子性边界](./chapter-01#ch1-1) |
+| 死锁（Coffman 四条件）、活锁（走廊让路效应）与饥饿排查对比 | [1.2 死锁、活锁与饥饿对照诊断](./chapter-01#ch1-2) |
+| Go 内存模型 `happens-before` 同步保证总表（无缓冲/缓冲通道、锁、`Once`、`atomic`） | [1.3 Go 内存模型与 happens-before 速查](./chapter-01#ch1-3) |
+| CSP 通道 vs 互斥锁选型决策树、并发安全 API 三问契约 | [1.4 CSP 建模与同步选型决策](./chapter-01#ch1-4) |
+| Fork-Join 模型、OS 线程 vs Goroutine 栈体积与上下文切换实测对比 | [2.1 Fork-Join 与轻量级实测](./chapter-02#ch2-1) |
+| `sync.Cond` 锁协议、`for` 重检铁律、`Broadcast` 多订阅与 `context.AfterFunc` 取消 | [2.2 `sync.Cond` 条件变量](./chapter-02#ch2-2) |
+| `sync.Pool` 指针复用、两代 GC 静默清空机制与“连接池预热”反模式纠偏 | [2.3 `sync.Pool` 与 GC 边界](./chapter-02#ch2-3) |
+| `RWMutex` 原子读计数争用拐点、`sync.Once` 计次/死锁/`panic` 陷阱 | [2.4 `RWMutex` 与 `Once` 深层陷阱](./chapter-02#ch2-4) |
+| 通道所有者 4 职责 vs 消费者 2 职责、3 阻塞 + 3 `panic` + 3 编译错误防线表 | [2.5 通道所有权与状态防线矩阵](./chapter-02#ch2-5) |
+| 词法约束（Lexical Confinement）、三索引切片并发写隔离、防协程泄漏铁律 | [3.1 词法约束与生命周期契约](./chapter-03#ch3-1) |
+| `or-channel` 递归合并取消信号、`Result[T]` 容错流 vs `errgroup` 首错快停 | [3.2 `or-channel` 与并发错误分流](./chapter-03#ch3-2) |
+| 泛型 Pipeline vs `iter.Seq` 边界、`take` 的 `select` 求值陷阱、扇出扇入准入条件 | [3.3 泛型 Pipeline 与扇出扇入](./chapter-03#ch3-3) |
+| `orDone` 异构通道包装、`tee` 双路分流置 `nil` 技巧、`bridge` 顺序展平通道流 | [3.4 高阶通道组合子：`orDone`、`tee` 与 `bridge`](./chapter-03#ch3-4) |
+| 缓冲队列解耦本质、超时重试死亡螺旋、利特尔法则 `L = λW`、`Deadline` 0ms 快败 | [3.5 排队理论、利特尔法则与快速失败](./chapter-03#ch3-5) |
+| 模块边界结构化错误四要素、已知边界错误 vs 未预期 Bug、`errors.AsType` | [4.1 模块边界错误契约](./chapter-04#ch4-1) |
+| 可抢占周期划分、局部累加防半途脏状态、取消重发时的重复消息防护 | [4.2 超时、可抢占周期与状态回滚](./chapter-04#ch4-2) |
+| `timeout/2` 固定间隔探活心跳、工作单元启动心跳消除测试 `Sleep`、`synctest` 协同 | [4.3 双模式心跳机制](./chapter-04#ch4-3) |
+| 对冲复制请求（Hedged Requests）降低尾延迟与独立故障域前提 | [4.4 对冲复制请求尾延迟治理](./chapter-04#ch4-4) |
+| 令牌桶 `golang.org/x/time/rate`、`Wait`/`Allow`/`Reserve`、多层多维 `MultiLimiter` | [4.5 多层多维令牌桶限流](./chapter-04#ch4-5) |
+| Steward / Ward 自愈监管树、修复心跳通道关闭空转缺陷、毒丸输入熔断 | [4.6 协程自愈监管模式](./chapter-04#ch4-6) |
+| 双端队列工作窃取、续体窃取（Continuation Stealing）为何优于子任务窃取 | [5.1 续体窃取 vs 子任务窃取](./chapter-05#ch5-1) |
+| GMP 调度细节、Netpoller vs 阻塞 syscall `P` 剥离交接、Go 1.14+ `SIGURG` 异步抢占 | [5.2 GMP 调度、交接与异步抢占](./chapter-05#ch5-2) |
+| `GOMAXPROCS` 容器 cgroup 配额自动感知（Go 1.25+）、测试期超配放大竞态 | [5.3 `GOMAXPROCS` 与容器配额感知](./chapter-05#ch5-3) |
+| `GOTRACEBACK=all` 全协程栈、`GORACE`、`pprof` 泄漏/锁争用画像与 `NewProfile` | [5.4 `GOTRACEBACK`、`GORACE` 与 `pprof`](./chapter-05#ch5-4) |
+| `go tool trace` 调度延迟定界、`trace.FlightRecorder` 线上慢请求滑窗抓拍 | [5.5 执行追踪器与 `FlightRecorder`](./chapter-05#ch5-5) |
 
-## 阅读与自测约定
+## 阅读与代码约定 {#conventions}
 
-首次学习建议从 [第 1 章 并发概述](./chapter-01) 按顺序推进；日常开发或复习排查时，也可按主题直接查阅[通道状态与关闭规则](./chapter-03#ch3-5)、[流水线与防泄漏模式](./chapter-04#ch4-3)、[超时预算与限流](./chapter-05#ch5-2)或[并发诊断工具链](./appendix-a#cha-3)。
-
-各章统一采用“本章要点 → 正文推导与示例 → 练习 → 面试题 → 参考资料”的结构：
-
-- **代码上下文**：完整可运行程序会给出 `package main` 与 `import` 块；聚焦局部规则的函数或语句片段则省略样板声明，并在首次使用包限定符时说明对应标准库或扩展库导入路径。
-- **练习与面试题**：练习侧重协议设计、缺陷定位与代码改写，面试题侧重核心规则辨析与版本边界判断。所有参考答案默认折叠，建议先独立写出推理依据，再展开答案核对。
+- **章节结构与自测**：每章按“本章要点 → 正文原理、速查表与现代写法 → 练习 → 面试题 → 参考资料”组织，所有练习与面试题参考答案默认折叠，建议先独立推演再展开核对。
+- **代码上下文**：简短代码片段默认省略外层 `package` 与常规 `import` 块；纯通知信号通道统一采用零内存开销的 `chan struct{}`，通用并发组合子统一采用 Go 1.18+ 类型参数 `[T any]`。
+- **版本标注与勘误说明**：涉及最低版本要求的语言或运行时特性在首次出现处括注起始版本（如 `Go 1.25+`）；原书存在过时结论、算术笔误或中译本误译处均在正文明确更正并给出依据。
 
 ## 参考资料
 
-- [Go 官方下载与稳定版本列表](https://go.dev/dl/?mode=json)
-- [Go 语言规范（The Go Programming Language Specification）](https://go.dev/ref/spec)
 - [Go 内存模型（The Go Memory Model）](https://go.dev/ref/mem)
-- [Go 模块参考：`go` 语言版本指令](https://go.dev/doc/modules/gomod-ref#go)
-- [Go 向后兼容性与 `GODEBUG` 默认值演进](https://go.dev/doc/godebug)
-- [Go 1.25 发布说明](https://go.dev/doc/go1.25)
-- [Go 1.26 发布说明](https://go.dev/doc/go1.26)
-- [Go 1.27 发布说明](https://go.dev/doc/go1.27)
+- [Go 语言规范（The Go Programming Language Specification）](https://go.dev/ref/spec)
+- [Go 官方诊断指南（Diagnostics）](https://go.dev/doc/diagnostics)
+- [Go 官方博客：Pipelines and cancellation](https://go.dev/blog/pipelines)
+- [Go 标准库 `sync`、`context`、`runtime` 与 `testing/synctest` 文档](https://pkg.go.dev/std)

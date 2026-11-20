@@ -1,267 +1,336 @@
 ---
-title: 第 2 章 对代码建模：通信顺序进程
-description: 厘清并发与并行的本质区别，运用 CSP 思想、数据所有权契约与原书决策树选择合适的并发模型。
+title: 第 2 章 进阶同步原语与通道所有权
+description: 深入 Fork-Join 内存与切换开销实测，掌握 sync.Cond、sync.Pool、RWMutex 与 Once 的深层边界及通道所有权词法契约。
 ---
 
-# 第 2 章 对代码建模：通信顺序进程
+# 第 2 章 进阶同步原语与通道所有权
 
 ## 本章要点
 
-面对一个并发需求，首要问题不是“该启动多少个 goroutine”，而是如何按照问题域的自然边界拆分任务、界定数据所有权，并在组件之间建立清晰的协作协议。本章从区分“并发”与“并行”出发，回顾 Tony Hoare 的通信顺序进程（CSP）思想如何启发了 Go 的通道与 `select` 设计，剖析通过通道传递数据时的所有权边界，并结合原书的并发决策树说明何时应当选择通道、何时应当使用互斥锁。
+Goroutine、通道、`sync.WaitGroup` 与 `sync.Mutex` 的基础语法已在[《Go 语言学习指南》第 13 章](../go-guide/chapter-13#ch13-1)介绍。本章在此基础上深入 Go 并发基元的性能边界、高阶同步原语与所有权设计：首先从分叉—汇合模型出发，量化对比操作系统线程与 Goroutine 的内存驻留和上下文切换开销；接着剖析 `sync.Cond` 多订阅唤醒与取消集成、`sync.Pool` 临时对象复用及两轮 GC 回收红线、`sync.RWMutex` 读争用拐点与 `sync.Once` 的三类隐蔽陷阱；最后建立词法级的通道所有权契约与完整状态防线矩阵，帮助读者从“会调用并发原语”进阶到“能界定同步权责与资源边界”。
 
-读完本章后，应能理解“并发属于代码结构、并行属于运行属性”的抽象价值，识别传递指针或切片时的底层共享风险，并能根据“转移所有权、保护结构内部状态、协调多段逻辑、热点临界区性能”四个维度为组件选定恰当的并发模型。
+> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Linux/AMD64。
 
-> 核对日期：2026 年 11 月 10 日；核对环境为 Go 1.27.3、Windows/AMD64。
+## 2.1 Fork-Join 模型与 Goroutine 轻量级实测 {#ch2-1}
 
-## 2.1 并发与并行的区别 {#ch2-1}
+Go 程序的并发执行遵循**分叉—汇合**（Fork-Join）模型：每条 `go` 语句在父协程控制流上分叉出独立推进的子分支，随后父子分支必须在明确的**汇合点**（Join Point）通过 `sync.WaitGroup` 或通道通信重新同步。在主协程末尾调用 `time.Sleep` 绝不能充当汇合点——它不建立内存模型中的先行发生关系，详见 [1.3 节](./chapter-01#ch1-3)，仅概率性拉长竞争窗口，机器负载波动时随时丢失结果或触发数据竞争。
 
-在日常技术交流中，“并发（Concurrency）”和“并行（Parallelism）”经常被混为一谈，用来泛指“几件事同时发生”。但原书开篇就给出了一句极其精准的论断：**并发属于代码；并行属于一个运行中的程序。**
+理解为何 Go 可以为每个连接或子任务派生独立协程，需要对比操作系统线程与 Goroutine 的底层资源账本：
 
-假设你编写了一段包含两个独立任务的程序。当这段二进制文件跑在只有**单颗 CPU 核心**的机器上时，两个任务绝不可能在同一物理纳秒内同时执行——CPU 通过高频上下文切换交替运行它们，在宏观上呈现出同时推进的效果，这就是**并发**；而将同一个二进制文件原封不动地搬到拥有**多颗 CPU 核心**的机器上运行时，两个任务才可能在同一时刻真正同时执行机器指令，这就是**并行**。
-
-区分这两个概念，能为我们对代码建模带来三层重要启示：
-
-1. **我们编写的是并发代码，而非并行代码**：代码表达的是“哪些工作在逻辑上彼此独立、允许交错或同时推进”；至于运行时究竟分配几个物理核心去并行跑它们，是由底层的 Go 运行时调度器、操作系统内核、虚拟机/容器配额以及硬件共同决定的。
-2. **对底层并行细节保持“无知”正是抽象的力量**：在仅提供操作系统线程（OS Thread）抽象的传统语言中，编写一个接收客户端会话的 Web 服务器时，开发者往往一开始就被迫思考“并行”层面的机器细节：操作系统线程有多重？应该建多大的线程池？如何把成千上万个连接状态机拆碎复用到有限的线程上？而在 Go 中，得益于 `goroutine` 与 `channel` 这一层抽象，我们可以直接按照问题域的自然语义建模——**“每个客户端连接对应一个独立的会话函数，用 `go` 启动它即可”**。将并发任务多路复用到操作系统线程、在 I/O 阻塞时自动切换线程的工作，全由 Go 运行时在幕后完成。
-3. **并发与并行的边界取决于观察上下文**：正如[第 1 章的原子性](./chapter-01#ch1-3)取决于观察范围，并行与隔离性同样取决于所选择的抽象层级。在两台独立计算机或两个独立操作系统进程之间，操作系统为我们隔离了虚拟地址空间；而一旦深入到同一个进程内的多个线程或 goroutine，共享地址空间带来的数据竞争、死锁与饥饿就会全面浮现，越发需要简洁、可组合的原语来控制复杂度。
-
-## 2.2 什么是 CSP {#ch2-2}
-
-讨论 Go 并发时，几乎总会提到 **CSP**。它是 **Communicating Sequential Processes（通信顺序进程）** 的缩写，源自图灵奖得主 Charles Antony Richard Hoare（Tony Hoare）于 1978 年在《ACM 通讯》上发表的同名开创性论文。
-
-在 20 世纪 70 年代末，主流编程研究集中在顺序控制流（如 `goto` 语句争论与早期面向对象），而并发协作中的**输入（Input）**与**输出（Output）**长期被当作次要的底层库调用。Hoare 在论文中提出：**输入与输出应当成为编程语言的一等原语**。在 CSP 模型里，系统由多个内部按顺序执行代码的独立“进程（Process，指逻辑执行单元而非操作系统进程）”组成，进程之间不直接共享状态，而是单纯通过同步通信原语交换数据：
-
-| 1978 年 CSP 论文记法 | 含义说明 | 对应的 Go 概念 |
+| 对比维度 | 操作系统线程（Linux pthread） | Goroutine |
 | --- | --- | --- |
-| `cardreader?cardimage` | 从 `cardreader` 进程读取一条记录并存入变量 `cardimage` | 通道接收 `cardImage := <-cardReader` |
-| `lineprinter!lineimage` | 向 `lineprinter` 进程发送变量 `lineimage` 的值 | 通道发送 `linePrinter <- lineImage` |
-| `*[c:character; west?c -> east!c]` | 持续从 `west` 读取字符 `c` 并转发给 `east`，直到 `west` 终止 | `for c := range west { east <- c }` |
+| 初始栈内存 | 通常固定 `1～8 MiB`，附带内核态保护页 | 现代 Go 运行时初始栈仅 `2 KiB`；原书实测挂起空协程平均约 `2.8 KB` |
+| 栈扩缩容机制 | 创建后固定不变，深递归易栈溢出，浅任务浪费物理页 | 运行时在堆上按需连续栈翻倍扩容，GC 期间自动缩容回收空闲栈 |
+| 调度层级 | 内核抢占调度，切换需陷入内核态保存完整寄存器与浮点状态 | 用户态 GMP 调度，仅保存程序计数器与少量通用寄存器 |
+| 同核上下文切换实测 | 原书 Linux 同核 `perf bench sched pipe` 单次切换约 `1.47 µs` | 单核 `GOMAXPROCS=1` 无缓冲空结构体通道单次切换约 `110～225 ns`，快约 90% |
+| 内存回收边界 | 线程退出后回收内核栈与描述符 | **阻塞未退出的协程绝不会被 GC 自动回收**，泄漏协程连同栈上引用长期驻留 |
 
-Hoare 还引入了 Dijkstra 在 1974 年提出的**守护命令（Guarded Commands，`->`）**：只有当箭头左侧的布尔条件或通信操作就绪成功时，右侧的语句才会被执行；若多个守护分支同时存在，则从中非确定性地选择一个就绪分支执行。这一思想直接演化成了 Go 语言中用于多路复用通道的 **`select` 语句**。
-
-不过在用 CSP 理解 Go 时，必须看清 Go 对原始理论所做的两处关键改造与工程折中：
-
-- **从“具名进程通信”演进为“匿名通道（Channel）”**：在 Hoare 1978 年的最初设计中，通信命令必须直接写出源进程或目标进程的名字（如 `west?c`、`east!c`），导致生产者与消费者强耦合。他在论文末尾提出了“端口名（Port Names）”构想，并在随后数年的进程演算（Process Calculi）中完善了独立通道的概念。Go 采纳的正是这一演进后的设计：goroutine 之间互不知晓对方的身份，只围绕一等公民 `chan T` 发送和接收数据，从而使任意两个阶段都能自由插拔、扇出或合并。
-- **Go 并非纯粹的无共享 CSP 语言**：在严格的 CSP 模型中，进程之间完全隔离；而在 Go 中，**所有 goroutine 依然运行在同一个进程地址空间内**，可以通过闭包捕获、指针、切片或包级变量直接读写同一块内存。因此，CSP 风格帮我们理清了数据流向，却不会在编译器层面自动禁止共享内存竞争。
-
-## 2.3 通过通信管理数据所有权 {#ch2-3}
-
-Go 社区有一句耳熟能详的并发格言：
-
-> **不要通过共享内存来通信；相反，通过通信来共享内存。**
-> （Do not communicate by sharing memory; instead, share memory by communicating.）
-
-这句话的工程本质，是通过通道通信来实现**数据所有权的转移（Ownership Transfer）**：如果在任意时刻都只有唯一一个 goroutine 拥有某份可变数据的读写权，那么在不加任何互斥锁的情况下，这份数据在逻辑上也是天然并发安全的。
-
-### 2.3.1 通道复制的是值描述符而非深层内存 {#ch2-3-1}
-
-要在代码中真正落实“所有权转移”，必须牢记 Go 的值传递规则：**向通道发送数据 `ch <- v` 时，运行时复制的是变量 `v` 本身的值**。
-
-- 如果发送的是 `int`、`bool` 或纯值字段结构体，接收方拿到的是完全独立的副本；
-- 但如果发送的是**指针 `*T`、切片 `[]T` 或映射 `map[K]V`**，通道复制的仅仅是指针地址或切片/映射的头部描述符，**发送方与接收方依然指向同一块底层内存**！
-
-观察下面这段函数内代码（无省略包导入）：
+借助标准库 `"runtime"` 与 `"sync"`，可实测一万个挂起协程的平均驻留内存，并验证通过关闭门闩通道统一放行收尾：
 
 ```go
-jobs := make(chan []byte, 1)
-buf := []byte("go")
-jobs <- buf
-buf[0] = 'n' // 危险：发送后继续原地修改同一底层数组！
+func measureIdleGoroutines(n int) uint64 {
+	noop := make(chan struct{})
+	var wg, ready sync.WaitGroup
+	sysMem := func() uint64 {
+		runtime.GC()
+		var s runtime.MemStats
+		runtime.ReadMemStats(&s)
+		return s.Sys
+	}
+	before := sysMem()
+	for range n {
+		ready.Add(1)
+		wg.Go(func() { // Go 1.25+ 自动管理 Add/Done
+			ready.Done()
+			<-noop // 挂起等待，若不关闭 noop 则永远不会被 GC 回收
+		})
+	}
+	ready.Wait()
+	after := sysMem()
+	close(noop)
+	wg.Wait()
+	return (max(after, before) - before) / uint64(max(n, 1))
+}
 ```
 
-尽管 `jobs <- buf` 已经把切片发进了通道，但发送者手里仍然保留着指向同一底层数组的变量 `buf`。随后发送者执行 `buf[0] = 'n'`，不仅会让下游消费者读到被篡改的 `"no"`，而且如果消费者正在并发读取 `buf[0]`，还会直接触发**数据竞争**。同理，把函数返回类型收窄为只读通道 `<-chan *Item`，只能靠编译器阻止调用方往该通道反向发送或调用 `close`，却无法阻止调用方通过收到的 `*Item` 指针并发修改对象字段，或阻止生产者内部保留别名继续改写。
+## 2.2 sync.Cond 条件变量与多订阅广播 {#ch2-2}
 
-### 2.3.2 四种明确的数据所有权契约 {#ch2-3-2}
+### 2.2.1 Wait 锁协议、for 循环重检与 Signal / Broadcast {#ch2-2-1}
 
-为了避免“表面用了通道、底下仍在竞争共享内存”，跨 goroutine 传递数据时应显式约定以下四种所有权契约之一：
+标准库 `"sync"` 的 `sync.Cond` 用于让一组协程挂起等待共享状态满足特定条件。它在两类场景下明显优于通道或轮询：一是等待共享内存满足**复合布尔谓词**，避免 `time.Sleep` 轮询在 CPU 空转与高尾延迟之间两难；二是需要**可重复触发的一对多广播**——`close(ch)` 在通道生命周期内只能广播一次，而 `Cond.Broadcast()` 可随状态反复变化无限次通知。
 
-| 所有权契约 | 发送方的责任 | 接收方的责任 | 典型实现手法 |
+通过 `sync.NewCond(&mu)` 创建条件变量后，调用 `Wait` 必须严守三步锁协议：
+
+1. **调用 `c.Wait()` 前必须已持有 `c.L.Lock()`**：`Wait` 内部首步会解锁 `c.L`，未持锁调用会直接触发解锁未锁定互斥锁的 `panic`。
+2. **原子入队解锁与返回前重获锁**：`c.Wait()` 将当前协程加入等待队列并释放 `c.L.Unlock()` 进入休眠；被唤醒后，**在 `Wait()` 返回前会自动重新获取 `c.L.Lock()`**。
+3. **条件判断必须包裹在 `for !condition()` 循环中**：绝不能用 `if !condition()`。从发出唤醒信号到等待协程重新抢回互斥锁的窗口期内，其他协程可能已抢先改写状态，或因广播连带唤醒而自身条件尚未满足，醒来后必须重检谓词。
+
+通知侧不强制调用方持有 `c.L`，但修改受保护状态本身仍须加锁：**`c.Signal()`** 唤醒等待时间最长的**单个**协程，适合有界队列腾出单槽位等一对一交接；**`c.Broadcast()`** 一次性唤醒**全部**等待协程各自重检条件，适合配置热更新、连接重连就绪等多订阅者事件。
+
+### 2.2.2 结合 context.AfterFunc 实现可取消条件等待 {#ch2-2-2}
+
+`Cond.Wait()` 无法直接放入 `select` 分支监听取消。在 Go 1.21+ 中，可组合标准库 `"context"` 的 `context.AfterFunc`，详见[学习指南 14.2.3](../go-guide/chapter-14#ch14-2-3)，在 `ctx` 取消瞬间异步加锁并广播唤醒等待协程退出循环：
+
+```go
+func waitCondition(ctx context.Context, c *sync.Cond, cond func() bool) error {
+	stop := context.AfterFunc(ctx, func() {
+		c.L.Lock()
+		c.Broadcast()
+		c.L.Unlock()
+	})
+	defer stop() // 若因条件满足提前返回，立即注销取消回调
+
+	c.L.Lock()
+	defer c.L.Unlock()
+	for !cond() && ctx.Err() == nil {
+		c.Wait()
+	}
+	if cond() {
+		return nil
+	}
+	return context.Cause(ctx)
+}
+```
+
+两处关键细节缺一不可：一是 `AfterFunc` 回调内必须持 `c.L.Lock()` 再调 `Broadcast()`，防止卡在检查完 `ctx.Err() == nil` 尚未入队休眠的缝隙中导致唤醒丢失；二是多协程携带各自超时共用 `c` 时，回调必须调 `Broadcast()` 而非 `Signal()`，否则可能误唤醒未超时的协程而让已取消的协程继续死等。
+
+## 2.3 sync.Pool 临时对象池与 GC 回收边界 {#ch2-3}
+
+`sync.Pool` 为每个逻辑处理器 P 维护本地私有槽位与共享环队列，低争用地复用**无状态、同构的高频临时内存对象**——典型如标准库 `"bytes"` 的 `*bytes.Buffer`、编码器缓冲或临时字节切片——从而摊薄堆分配次数并减轻垃圾回收扫描压力。安全使用须严守四条规则：
+
+1. **`New` 函数必须并发安全**：池空时多个协程会并发调用 `New()` 按需创建新实例。
+2. **存取指针类型，避免值切片接口装箱**：`Put(x any)` 接收空接口；直接 `Put([]byte)` 每次都会把 24 字节切片头装箱分配到堆上，应改为存取 `*[]byte` 或 `*bytes.Buffer`。
+3. **每次复用彻底 `Reset()` 脏状态，并限制归还容量上限**：防止残留字节串台，同时避免偶发大报文撑出数十 MiB 数组长期常驻池中。
+4. **不对 `Put` 与 `Get` 的对应关系做任何业务假设**：入池对象随时可能被运行时静默清空。
+
+**原书纠偏与两轮 GC 回收红线**：原书第 3 章的 `warmServiceConnCache` 示例用 `sync.Pool` 缓存并提前预热 10 个网络连接，这在工程上属于典型误用。`sync.Pool` 既无容量上限，也无淘汰析构回调；自 Go 1.13 引入两代受害者缓存（`victim cache`）后，每轮 GC 会将主池移入 `victim` 并清空上一轮 `victim`——即池中闲置对象**最多存活 2 轮 GC 就会被无通知静默回收**。因此启动时预先 `Put` 的连接经历两次常规 GC 即全部失效；更严重的是，**严禁向 `sync.Pool` 存放 `net.Conn`、数据库连接或文件句柄等需显式 `Close()` 的有状态资源**，否则对象被静默丢弃时无法优雅关闭底层连接，引发连接与文件描述符泄漏。有状态长连接应使用有界通道池或标准库内建连接池管理。
+
+## 2.4 RWMutex 读争用拐点与 sync.Once 深层陷阱 {#ch2-4}
+
+**`Mutex` 与 `RWMutex` 的实测性能拐点**：原书曾建议“逻辑合理时默认优先用 `sync.RWMutex`”。实际上，`RWMutex.RLock()` 每次加解锁仍须对内部共享计数 `readerCount` 执行原子增减；在多核高并发且临界区极短——如仅做一次指针或整数读取——的场景下，多核密集争抢同一缓存行会引发严重的**缓存行乒乓**，实测吞吐反而慢于普通 `sync.Mutex`。工程上应默认从 `sync.Mutex` 起步，仅在**读远多于写且临界区耗时足以摊薄原子计数开销**时，经[基准测试](../go-guide/chapter-17#ch17-4-2)验证后再切换 `RWMutex`。
+
+**`sync.Once` 的三大深层陷阱**：裸用 `sync.Once` 时须警惕以下三类边界行为：
+
+| 陷阱场景 | 实际运行表现 | 底层根因与现代替代方案 |
+| --- | --- | --- |
+| 同一 `Once` 先后传入不同函数 | `once.Do(inc)` 后调 `once.Do(dec)`，`dec` 被静默忽略 | `Once` 统计的是**该实例 `Do` 的调用次数**而非不同函数；每项初始化须配独立 `Once` |
+| 两把 `Once` 互相嵌套回调 | `onceA.Do` 调 `onceB.Do` 又回调 `onceA.Do`，永久死锁 | 首次 `Do` 持内部互斥锁等待返回，重入同一 `onceA.Do` 阻塞等锁形成环路等待 |
+| 初始化函数 `f` 触发 `panic` | 外层 `recover` 后再调裸 `once.Do(f)`，**不重试直接放行** | `once.Do` 用 `defer` 将完成位置 `1`，导致后续读到半初始化脏状态；Go 1.21+ 改用 `sync.OnceFunc` / `OnceValue`，详见[学习指南 13.3.3](../go-guide/chapter-13#ch13-3-3) |
+
+```go
+func compareOncePanic() (rawRuns int, rePanicked bool) {
+	var once sync.Once
+	runRaw := func() {
+		defer func() { _ = recover() }()
+		once.Do(func() { rawRuns++; panic("boom") })
+	}
+	runRaw()
+	runRaw() // rawRuns 仍为 1 且未再 panic，调用方误将残缺状态当作已就绪！
+
+	fn := sync.OnceFunc(func() { panic("boom") })
+	func() { defer func() { _ = recover() }(); fn() }()
+	func() {
+		defer func() { rePanicked = recover() != nil }()
+		fn() // OnceFunc 缓存首次 panic 值并在后续每次调用时重抛
+	}()
+	return rawRuns, rePanicked // 1, true
+}
+```
+
+## 2.5 通道所有权契约与完整状态防线矩阵 {#ch2-5}
+
+根治通道死锁与关闭 `panic` 的核心手段，是在词法作用域内划清**通道所有者**（Owner）与**消费者**（Consumer）的权责契约：
+
+- **所有者四项职责**：① 实例化双向通道 `make(chan T)`；② 独占写入数据或显式移交所有权；③ 作为唯一合法关闭方通过 `defer close(ch)` 收尾；④ 将返回值收窄为只读通道 `<-chan T`。
+- **消费者两项职责**：① 仅通过逗号 `ok` 或 `for range` 检测关闭并收工；② 处理读取阻塞与上游取消，在编译期由单向类型拦截越权写入或关闭。
+
+```go
+func intStream(n int) <-chan int { // 4. 对外仅暴露只读通道 <-chan int
+	ch := make(chan int)           // 1. 实例化双向通道
+	go func() {
+		defer close(ch)            // 3. 词法闭包内唯一负责关闭
+		for i := range n {
+			ch <- i                // 2. 独占写入
+		}
+	}()
+	return ch
+}
+```
+
+结合单向通道约束与[学习指南 13.2.2](../go-guide/chapter-13#ch13-2-2)的基础状态，通道完整防线可概括为“3 类阻塞、3 类运行期 `panic`、3 类编译期拦截”：
+
+| 通道状态或类型约束 | 读取 `<-ch` | 写入 `ch <- v` | 关闭 `close(ch)` |
 | --- | --- | --- | --- |
-| **1. 移交可变所有权** | 发送成功后**立即停止读写**原对象及其任何别名 | 成为唯一所有者，可自由修改；用完自行释放或按协议归还 | 函数内局部构造新对象，发送后变量直接离开作用域 |
-| **2. 发送隔离副本** | 发送前对可变数据完成深拷贝 | 独占操作收到的副本，与发送方原数据互不影响 | 字节切片用 **Go 1.21+** 标准库 `"slices"` 的 `slices.Clone(buf)` |
-| **3. 共享不可变数据** | 在发布到通道前完成全部初始化，此后永不修改 | 所有接收者均严格只读，不产生任何写入 | 只读配置快照、字符串或只暴露只读方法的封装类型 |
-| **4. 共享受保护状态** | 与其他访问者遵守同一同步原语约定 | 在同一锁或原子操作协议下访问 | 状态内部封装 `sync.Mutex`，对外只暴露线程安全方法 |
+| 零值 `nil` 通道 | **永久阻塞** | **永久阻塞** | **`panic`** |
+| 已打开、空缓冲（含无缓冲无配对） | **阻塞等待写入** | 无缓冲无接收方时**阻塞**；有空槽立即写入 | 正常关闭，唤醒挂起读协程返回零值与 `false` |
+| 已打开、非空且未满（有缓冲） | 立即按 FIFO 读出首元素 | 立即写入尾槽位 | 正常关闭，保留缓冲内已有元素 |
+| 已打开、缓冲已满（含无缓冲无接收方） | 有缓冲立即读出；无缓冲无发送方时**阻塞** | **阻塞等待空槽或接收方** | 正常关闭 |
+| 已关闭通道 | 先读尽残留元素，排空后**立即返回零值与 `false`** | **`panic`** | **`panic`** |
+| 只读通道类型 `<-chan T` | 按上述运行期状态读取 | **编译错误** | **编译错误** |
+| 只写通道类型 `chan<- T` | **编译错误** | 按上述运行期状态写入 | 按上述运行期状态关闭 |
 
-需要注意，Go 1.21 引入的 `slices.Clone`（导入 `"slices"`）和 `maps.Clone`（导入 `"maps"`）执行的是**第一层元素级浅拷贝**：对于 `[]byte`、`[]int` 这类值元素切片，克隆后底层数组完全隔离；但如果切片元素本身是指针 `[]*User` 或嵌套切片 `[][]byte`，克隆出的新切片仍然与原切片共享内层指针指向的对象，必要时需编写针对性的深拷贝函数。
-
-## 2.4 Go 语言的并发哲学：通道还是互斥锁 {#ch2-4}
-
-既然 Go 同时提供了 CSP 原语（`channel`、`select`）和传统的内存访问同步原语（`sync.Mutex`、`sync.RWMutex`、`sync/atomic`），实际编码时究竟该如何抉择？原书给出了一句总原则——**“使用最具表现力且最简单的那种方式”**，并进一步提炼出了一棵非常实用的**并发原语决策树**（对应原书图 2-1）：
-
-```text
-[1] 你想要转让数据的所有权吗？
- ├── 是 ──► 使用 channel（表达数据流向，并用带缓冲队列解耦生产与消费）
- └── 否
-      ▼
-[2] 你是否试图保护某个结构体/组件紧密的内部状态？
- ├── 是 ──► 使用内存访问同步原语（如 sync.Mutex，将锁严格隐藏在类型内部）
- └── 否
-      ▼
-[3] 你是否试图协调多个独立的逻辑片段（如流水线、超时、取消、多路合流）？
- ├── 是 ──► 使用 channel + select（天然具备高可组合性）
- └── 否
-      ▼
-[4] 这是一个经剖析证实的性能热点临界区吗？
- ├── 是 ──► 使用内存访问同步原语（sync.Mutex / sync/atomic），或重新规划并发架构
- └── 否 ──► 优先选择代码边界更清晰的实现
-```
-
-我们结合具体代码场景逐层拆解这四个判断节点：
-
-### 2.4.1 保护结构内部状态：将锁封装在词法范围内 {#ch2-4-1}
-
-当你只是想维护一个进程内计数器、本地缓存或连接状态表，且调用者并不关心任何异步流水线时，硬塞一个管理 goroutine 加请求/响应通道反而又绕又慢。此时应当直接使用 `sync.Mutex`，并遵循原书强调的**内部封装原则**（示例导入标准库 `"sync"`）：
-
-```go
-type Counter struct {
-	mu    sync.Mutex
-	value int
-}
-
-func (c *Counter) Increment() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.value++
-}
-
-func (c *Counter) Value() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.value
-}
-```
-
-这里的关键词是**“内部（Internal）”**：`Counter` 将 `mu` 作为未导出字段藏在结构体内部，对外只暴露普通的同步方法 `Increment()` 和 `Value()`。调用者无需感知锁的存在，也不可能忘记加锁或解锁。反之，如果你发现自己正在把 `sync.Mutex` 暴露到结构体外部让调用方手动调用 `obj.Mu.Lock()`，往往说明类型的职责边界切分错了。
-
-### 2.4.2 协调多段逻辑与转移所有权：发挥通道的可组合性 {#ch2-4-2}
-
-为什么当涉及多个逻辑片段协作时，原书强烈建议切换到 `channel`？因为**互斥锁极难跨组件安全组合**——把多把锁分散在复杂的对象图里，稍有不慎就会引入[第 1 章讨论的交叉死锁](./chapter-01#ch1-4-1)，而且锁无法直接与“超时到期”“父请求取消”“等待任一下游先返回”等事件统一等待。
-
-相反，channel 是一等值，配合 `select` 可以轻松将“上游数据到达”“下游通道可写”“定时器触发”和“`context` 取消信号”编织在同一个等待点上。下表汇总了现代 Go 工程中五大并发组件的选型边界（相关标准库路径分别为 `"sync"`、`"sync/atomic"` 与 `"context"`）：
-
-| 典型需求 | 首选组件 | 必须补齐的工程边界 |
-| --- | --- | --- |
-| 保护结构体内部字段、缓存映射或复合不变量 | `sync.Mutex` / `sync.RWMutex` | 方法使用指针接收者，严禁按值复制锁，返回的引用不得泄露内部可变状态 |
-| 在阶段间移交任务、流式变换或广播完成信号 | `chan T` + `select` | 明确唯一关闭责任方，并在所有阻塞收发处监听取消信号以防泄漏 |
-| 等待一组并发子任务全部执行完毕 | `sync.WaitGroup`（含 Go 1.25+ `wg.Go`） | 只负责计数汇合；若需收集错误并联动取消，改用 [`errgroup`](./chapter-04#ch4-9) |
-| 独立布尔标志或单一数值的高频无锁统计 | `sync/atomic`（Go 1.19+ 泛型/类型化原子值） | 仅保单变量单步原子性，跨多变量的组合读写仍需互斥锁 |
-| 跨 API 与 goroutine 传递取消信号、截止时间与请求元数据 | `context.Context` | 取消是协作式通知，调用 `cancel()` 后仍须等待后台任务完成清理 |
-
-### 2.4.3 辩证看待“认为 goroutine 没有成本” {#ch2-4-3}
-
-原书在章末总结道：“追求简洁，尽量使用 channel，并且认为 goroutine 的使用是没有成本的。”理解这句话需要注意它针对的历史背景：作者是为了打消传统线程程序员“每写一个并发动作都要先建线程池”的心智枷锁，鼓励大家先按问题域的自然并发结构建模，避免过早优化。
-
-但在生产工程中，“goroutine 本身创建开销很低（初始栈仅 2 KiB）”**绝不意味着“goroutine 驱动的外部资源也没有上限”**。如果上游突发涌入十万个文件上传或慢查询请求，无限制地一请求起一 goroutine 会瞬间耗尽进程内存、文件描述符或打垮下游数据库。因此：
-
-- 在**建模阶段**，大胆用 goroutine 和 channel 表达清晰的业务分期与职责解耦；
-- 在**资源边界处**，对消耗大量 CPU、内存或外部 I/O 连接的阶段引入有界工作池（Worker Pool）或信号量做背压控制（详见[第 4 章扇出与有限并发](./chapter-04#ch4-5)及[第 5 章速率限制](./chapter-05#ch5-5)），这与 Go 的并发哲学完全相辅相成。
-
-## 2.5 实战建模：为并发组件编写契约协议 {#ch2-5}
-
-在动手写[第 3 章](./chapter-03)和[第 4 章](./chapter-04)的具体并发代码之前，我们可以将本章的思想浓缩为一张五步建模清单。例如，要实现一个“并发读取一批文件并汇总其 SHA-256 摘要”的服务函数，动笔前应先写下如下协议：
-
-1. **输入与生命周期边界**：函数首参接收 `ctx context.Context` 与文件路径列表 `paths []string`，调用方可通过取消 `ctx` 随时中止整批任务。
-2. **数据所有权划分**：路径分发器将不可变的 `string` 路径发往任务通道；每个工作者独立打开文件、使用局部变量计算摘要，构造不可变的 `{Path, Sum, Err}` 结果值发往结果通道，全程无共享可变内存。
-3. **并发度与背压约束**：启动固定数量（如受限于磁盘并发能力的 $N$ 个）工作者从同一个任务通道拉取路径，避免一次性打开成千上万个文件句柄。
-4. **通道关闭责任（单关原则）**：任务通道仅由路径分发器在发完或取消时关闭；结果通道由多个工作者共同写入，因此**任何单个工作者都不关闭结果通道**，而是由专门的协调协程在 `wg.Wait()` 确认全部工作者退出后统一关闭。
-5. **提前退出与清理保证**：无论因某文件报错提前中止，还是因外部 `ctx` 超时取消，所有阻塞在任务发送、结果发送上的 goroutine 都必须通过 `select` 监听 `<-ctx.Done()` 并在函数返回前彻底退出，绝不留下孤儿协程。
-
-一旦这份协议在脑海中清晰成型，后续的编码就只是把每条契约精准翻译成对应的 Go 原语。
+该矩阵还衍生出两项高频运行时特性：一是关闭 `make(chan struct{})` 可利用“已关闭通道无限次立即读取且零分配”充当一对多同时起跑门闩；二是无缓冲或空缓冲通道已有接收协程等待时，发送方执行 `ch <- v` 会触发快路径，直接将值拷入接收协程栈槽并唤醒它，省去环形缓冲二次拷贝。
 
 ## 练习 {#ch2-exercises}
 
-以下两道练习分别考察通道通信中的底层内存共享问题，以及结合原书决策树为混合业务场景选型建模。建议先独立写出分析与设计方案，再展开参考答案核对；代码片段均位于函数体内。
+以下 2 道练习分别检验 `sync.Cond` 结合 `context.AfterFunc` 实现可取消有界阻塞队列，以及 `sync.Pool` 安全复用字节缓冲并防范超大数组滞留。代码默认位于同一包内，按需导入 `"bytes"`、`"context"`、`"strings"` 与 `"sync"`。建议先独立编写，再展开核对参考答案。
 
-### 练习 1：复用读取缓冲区为何会导致下游消费出错
+### 练习 1：使用 sync.Cond 与 context.AfterFunc 实现可取消有界阻塞队列
 
-某日志采集器的生产协程循环调用 `n, err := reader.Read(buf)`，将字节读入同一个预分配的 `buf := make([]byte, 4096)` 切片中，随后执行 `lines <- buf[:n]` 把切片发给下游解析协程，立刻开始下一轮 `Read(buf)`。
-
-1. 请解释为什么下游解析协程会读到错乱的日志内容，甚至在 `go test -race` 下直接报数据竞争？
-2. 如果把 `lines` 从带缓冲通道 `make(chan []byte, 64)` 改成无缓冲通道 `make(chan []byte)`，能否修复该问题？
-3. 请根据 [2.3.2 节](#ch2-3-2)的所有权契约给出两种正确的修复方案，并说明各自的适用场景。
+实现泛型有界队列 `BoundedQueue[T any]`，包含 `NewBoundedQueue[T any](capacity int) *BoundedQueue[T]`、`Put(ctx context.Context, v T) error` 与 `Get(ctx context.Context) (T, error)`：队列满时 `Put` 阻塞至有空位或 `ctx` 取消，队列空时 `Get` 阻塞至有元素或 `ctx` 取消，出队槽位须清零旧引用且无唤醒丢失。
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **原因分析**：`buf[:n]` 与原切片 `buf` 共享同一个 4096 字节的底层数组，而 `lines <- buf[:n]` 仅复制了长度为 24 字节（64 位架构下指针、长度、容量各 8 字节）的切片头描述符。生产协程在发送后并未放弃底层数组的所有权，下一轮 `reader.Read(buf)` 的写入会直接覆盖下游解析协程正在异步读取的同一块内存，同时构成**数据竞争**与数据污染。
-2. **改成无缓冲通道不能修复**：无缓冲通道上的 `lines <- buf[:n]` 返回，只代表下游协程完成了“接收切片描述符”这一步会合，**并不代表下游已经解析完切片里的数据**！当下游还在逐字节解析 `buf[:n]` 时，上游就已经跑进下一轮 `Read(buf)` 覆盖内存了。
-3. **两种正确修复方案**：
-   - **方案 A（发送隔离副本）**：每次发送前用 `slices.Clone(buf[:n])`（需 Go 1.21+，导入 `"slices"`）或 `append([]byte(nil), buf[:n]...)` 拷贝出独立切片再发往 `lines`，生产协程可安全复用原 `buf`。实现最简单，适合单条数据不大、分配频率可控的场景。
-   - **方案 B（移交可变所有权 + 缓冲池归还）**：每次从 `sync.Pool`（或归还通道）取出一个独立的 `[]byte` 读入数据，执行 `lines <- chunk` 后生产协程彻底不再触碰 `chunk`；下游解析完毕后负责将 `chunk` 归还池中。适合高吞吐、对 GC 分配敏感的热点链路。
+```go
+type BoundedQueue[T any] struct {
+	mu                sync.Mutex
+	notEmpty, notFull *sync.Cond
+	buf               []T
+	head, tail, count int
+}
+
+func NewBoundedQueue[T any](capacity int) *BoundedQueue[T] {
+	if capacity <= 0 {
+		panic("capacity must be positive")
+	}
+	q := &BoundedQueue[T]{buf: make([]T, capacity)}
+	q.notEmpty = sync.NewCond(&q.mu)
+	q.notFull = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *BoundedQueue[T]) Put(ctx context.Context, v T) error {
+	stop := context.AfterFunc(ctx, func() {
+		q.mu.Lock()
+		q.notFull.Broadcast()
+		q.mu.Unlock()
+	})
+	defer stop()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for q.count == len(q.buf) && ctx.Err() == nil {
+		q.notFull.Wait()
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	q.buf[q.tail] = v
+	q.tail = (q.tail + 1) % len(q.buf)
+	q.count++
+	q.notEmpty.Signal()
+	return nil
+}
+
+func (q *BoundedQueue[T]) Get(ctx context.Context) (T, error) {
+	var zero T
+	stop := context.AfterFunc(ctx, func() {
+		q.mu.Lock()
+		q.notEmpty.Broadcast()
+		q.mu.Unlock()
+	})
+	defer stop()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for q.count == 0 && ctx.Err() == nil {
+		q.notEmpty.Wait()
+	}
+	if err := context.Cause(ctx); err != nil {
+		return zero, err
+	}
+	v := q.buf[q.head]
+	q.buf[q.head] = zero // 清零出队槽位，避免指针元素被底层切片持续引用
+	q.head = (q.head + 1) % len(q.buf)
+	q.count--
+	q.notFull.Signal()
+	return v, nil
+}
+```
+
+`notEmpty` 与 `notFull` 共用 `&q.mu`，使正常出入队可用 `Signal()` 精准唤醒对向单个协程；而取消回调在持锁下调用 `Broadcast()`，确保多个携带不同超时的等待者都能立即醒来重检 `ctx.Err()`。
 
 </details>
 
-### 练习 2：运用决策树为“本地限额缓存 + 多源并发询价”选型建模
+### 练习 2：使用 sync.Pool 安全复用 bytes.Buffer 格式化日志行
 
-某金融网关服务包含两项核心职责：
-- **职责 A**：在进程内存中维护一张高频读写的“客户风控额度表”，要求支持按客户 ID 原子地执行“查询当前剩余额度，若足够则扣减并返回成功”。
-- **职责 B**：收到一次询价请求后，同时向 3 家外部做市商接口发起网络询价，要求在 200ms 总超时内汇总所有成功返回的报价（允许部分做市商失败，但若 3 家全部失败则返回错误）。
-
-请对照 [2.4 节](#ch2-4)的决策树，分别为职责 A 和职责 B 选择并发原语，并说明职责 B 中的通道关闭责任与超时收尾方式。
+编写 `FormatLogLine(level, msg string, pairs ...string) string`，通过包级 `sync.Pool` 复用 `*bytes.Buffer` 拼接形如 `[INFO] login user=alice role=admin` 的文本（`pairs` 成对读取，末尾孤立项忽略）：要求无接口装箱分配、彻底重置脏数据，且当缓冲区 `Cap() > 64<<10` 时丢弃不归还入池。
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **职责 A（客户风控额度表）——选择封装在结构体内部的 `sync.Mutex`（或分片互斥锁）**：
-   - 对照决策树第 2 步：这里并非跨阶段移交数据，而是**保护单个结构体的内部状态与复合不变量**。
-   - 应定义 `QuotaBook` 结构体，内部持有未导出的 `mu sync.Mutex` 和 `quotas map[string]int64`，对外暴露同步方法 `TryDeduct(userID string, amount int64) bool`。在同一个 `Lock/Unlock` 临界区内完成读取检查与扣减，既避免数据竞争，又消除 Check-Then-Act 业务竞态。
-2. **职责 B（三方并发询价）——选择 `context.WithTimeout` + `sync.WaitGroup` + 结果 `channel`**：
-   - 对照决策树第 1、3 步：需要**协调 3 个独立的外部 I/O 逻辑片段并将结果移交汇总方**。
-   - **建模与收尾协议**：
-     1. 从入口 `ctx` 派生 `ctx, cancel := context.WithTimeout(parentCtx, 200*time.Millisecond)` 并 `defer cancel()`，将该子 `ctx` 传给全部 3 个网络客户端请求；
-     2. 创建容量为 `3` 的带缓冲结果通道 `results := make(chan quoteResult, 3)`（其中 `quoteResult` 包含报价与 `err` 字段）；
-     3. 用 `WaitGroup`（Go 1.25+ 直接用 `wg.Go`）启动 3 个询价协程，每个协程执行完毕后向 `results` 发送一次结果；由单独的收尾协程在 `wg.Wait()` 后执行 `close(results)`（或者固定循环接收 3 次）；
-     4. 汇总方遍历 `results`，收集 `err == nil` 的有效报价；由于结果通道容量为 `3` 且下游网络调用绑定了 `200ms` 超时的 `ctx`，即使外层提前返回，后台协程也会在超时后顺利写入缓冲并退出，不会发生 goroutine 泄漏。
+```go
+const maxPooledBufCap = 64 << 10
+
+var logBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func FormatLogLine(level, msg string, pairs ...string) string {
+	buf := logBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPooledBufCap {
+			buf.Reset()
+			logBufPool.Put(buf)
+		}
+	}()
+
+	buf.WriteByte('[')
+	buf.WriteString(strings.ToUpper(level))
+	buf.WriteString("] ")
+	buf.WriteString(msg)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		buf.WriteByte(' ')
+		buf.WriteString(pairs[i])
+		buf.WriteByte('=')
+		buf.WriteString(pairs[i+1])
+	}
+	return buf.String() // 先拷出独立 string，随后 defer 才重置并归还 buf
+}
+```
+
+返回语句先求值 `buf.String()` 完成字节拷贝，再触发 `defer` 归还入池，避免其他协程并发取出同一 `Buffer` 覆写尚未读完的切片；`64 KiB` 容量上限则防止偶发大文本将池内存永久撑高。
 
 </details>
 
 ## 面试题 {#ch2-interview}
 
-以下三题检验并发与并行的区分、类型系统的所有权边界以及工作池的工程价值。请先独立作答，再展开参考答案核对。
+以下 3 道面试题检验 `sync.Cond` 锁协议、`sync.Pool` 连接池反模式与 `sync.Once` 异常语义。代码约定同[练习部分](#ch2-exercises)，建议先独立作答再展开核对。
 
-### 面试题 1：为什么说“并发属于代码，并行属于运行中的程序”？
-
-请结合单核与多核执行环境，解释并发（Concurrency）与并行（Parallelism）的区别，以及这种区分对编写 Go 程序有什么实际意义？
+### 面试题 1：为什么调用 sync.Cond.Wait() 前必须先持有 c.L.Lock()，且外层必须用 for !cond() 而不能用 if !cond()？
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **核心区别**：**并发是程序的代码结构属性**，指把问题拆解为多个逻辑上独立、执行时间可重叠的任务并定义其同步关系；**并行是程序运行时的物理执行属性**，指多个任务在同一物理时刻于多个 CPU 核心上真正同时运行。
-2. **实际意义**：并发代码在单核机器上可通过分时交错推进（如一个协程等网络 I/O 时切换到另一个协程），在多核机器上则可由 Go 运行时自动调度到多个核心并行执行。开发者在编码时只需围绕业务独立性与同步契约构建并发模型，无需把代码绑死在特定的硬件核心数或固定大小的操作系统线程池上。
+1. **必须先持锁**：既为了无竞争读取共享条件、防止检查谓词与入队休眠之间丢失唤醒信号，也因为 `Wait()` 内部会立即调用 `c.L.Unlock()`，未持锁调用会直接触发 `panic`。
+2. **必须用 `for !cond()`**：`Wait()` 被唤醒后需重新竞争获取 `c.L.Lock()` 才能返回；在抢锁窗口期内状态可能已被其他协程改写，或因 `Broadcast` 连带唤醒而条件未满足，用 `if` 会在谓词不成立时错误放行。
 
 </details>
 
-### 面试题 2：函数返回只读通道 `<-chan *Order` 能否保证并发安全？
-
-某同城配送模块将订单流接口声明为 `func SubscribeOrders() <-chan *Order`。作者认为既然返回的是只读通道 `<-chan`，外部调用者就不可能破坏内部状态或引发数据竞争。这个判断是否正确？为什么？
+### 面试题 2：能否用 sync.Pool 缓存 TCP 长连接并在服务启动时预先 Put 10 个连接做预热？为什么？
 
 <details>
 <summary>查看参考答案</summary>
 
-**不正确。只读通道只限制对“通道本身”的操作，不限制对“通道元素所指向内存”的修改。**
-
-`<-chan *Order` 仅在编译期禁止调用方对该通道执行发送（`ch <- ...`）和关闭（`close(ch)`），但调用方从通道读出的是指针 `*Order`。如果发送方在发送该指针后仍在后台读写同一个 `Order` 结构体，或者将该指针同时发给了多个消费者且至少一方修改了 `*Order` 的字段，依然会直接引发数据竞争。要真正安全，必须配合明确的所有权协议（发送后彻底移交所有权、发送深拷贝副本，或只暴露不可变的只读视图）。
+**不能**。自 Go 1.13 引入两代 `victim` 缓存后，`sync.Pool` 中的闲置对象**最多存活 2 轮 GC 就会被无通知静默清空**，启动预热经历两次 GC 即全部失效；同时 `sync.Pool` 无容量上限也无淘汰析构回调，无法在丢弃时调用 `conn.Close()`，会导致连接悬挂与文件描述符泄漏。有状态长连接应使用有界通道池或专用连接池。
 
 </details>
 
-### 面试题 3：既然 goroutine 比操作系统线程轻量得多，为什么工程中仍然需要有界工作池或信号量？
-
-原书提到 goroutine 非常轻量，创建成千上万个都不成问题。那在实际后端服务中，为什么我们仍然经常使用固定数量的工作协程（Worker Pool）或有界信号量来限制并发数？
+### 面试题 3：对同一个 sync.Once 先后调用 once.Do(initA) 和 once.Do(initB)，或 initA 发生 panic 被外层 recover 后再次调用 once.Do(initA)，分别会发生什么？
 
 <details>
 <summary>查看参考答案</summary>
 
-**因为执行单元轻量，不代表它所消耗的软硬件资源也是无限的。**
-
-虽然每个 goroutine 的初始栈只有 2 KiB 且用户态切换成本极低，但每个正在运行的任务往往还会持有大块业务内存缓冲、打开文件描述符、占用数据库连接池槽位、消耗 CPU 算力或向脆弱的下游微服务发起请求。如果不加背压限制地随上游流量无限派生 goroutine，会导致内存暴涨（OOM）、下游连接耗尽或触发级联超时雪崩。使用有界工作池或通道信号量的目的，主要是**管控在途资源预算与施加背压**，而不是单纯节省创建 goroutine 的那一点开销。
+1. **先后传入 `initA` 和 `initB`**：仅执行 `initA`，`initB` 被静默忽略，因为 `sync.Once` 只记录该实例是否执行过一次，不区分函数地址。
+2. **`initA` 触发 `panic` 恢复后再调裸 `once.Do(initA)`**：不会重试也不会再次 `panic`，而是直接返回，导致调用方读到半初始化脏状态；Go 1.21+ 的 `sync.OnceFunc` / `OnceValue` 则会缓存首次 `panic` 并在后续调用时原样重抛。
 
 </details>
 
 ## 参考资料
 
-- [C. A. R. Hoare：Communicating Sequential Processes（1978）](https://doi.org/10.1145/359576.359585)
-- [Edsger W. Dijkstra：Guarded Commands, Nondeterminacy and Formal Derivation of Programs（1975）](https://doi.org/10.1145/360933.360975)
-- [Rob Pike：Concurrency is not Parallelism（Go 官方博客）](https://go.dev/blog/waza-talk)
-- [Effective Go：Share Memory By Communicating](https://go.dev/doc/effective_go#sharing)
-- [Go Wiki：Use a `sync.Mutex` or a channel?](https://go.dev/wiki/MutexOrChannel)
-- [标准库 `slices.Clone` 文档](https://pkg.go.dev/slices#Clone)
+- [Go 标准库 `sync`：`Cond`、`Pool`、`RWMutex` 与 `Once` 文档](https://pkg.go.dev/sync)
+- [Go 语言规范：通道类型与收发关闭语义（Channel types）](https://go.dev/ref/spec#Channel_types)
+- [Go 1.13 发布说明：`sync.Pool` 两代 `victim` 缓存机制](https://go.dev/doc/go1.13#sync)
+- [Go 1.21 发布说明：`context.AfterFunc` 与 `sync.OnceFunc` 系列函数](https://go.dev/doc/go1.21)
