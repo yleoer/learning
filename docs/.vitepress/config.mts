@@ -23,6 +23,17 @@ const goGuideChapters = [
   { text: '第 16 章 恶龙禁区：反射、unsafe 和 cgo', link: '/books/go-guide/chapter-16' },
 ]
 
+const goConcurrencyChapters = [
+  { text: '前言与章节导航', link: '/books/go-concurrency/' },
+  { text: '第 1 章 并发概述', link: '/books/go-concurrency/chapter-01' },
+  { text: '第 2 章 对代码建模：通信顺序进程', link: '/books/go-concurrency/chapter-02' },
+  { text: '第 3 章 Go 语言并发组件', link: '/books/go-concurrency/chapter-03' },
+  { text: '第 4 章 Go 语言的并发模式', link: '/books/go-concurrency/chapter-04' },
+  { text: '第 5 章 大规模并发', link: '/books/go-concurrency/chapter-05' },
+  { text: '第 6 章 goroutine 和 Go 语言运行时', link: '/books/go-concurrency/chapter-06' },
+  { text: '附录 A 并发诊断与测试', link: '/books/go-concurrency/appendix-a' },
+]
+
 const systemChapters = [
   { text: '前言与章节导航', link: '/books/system/' },
   { text: '第 1 章 硬件基础、CPU 执行与缓存架构', link: '/books/system/chapter-01' },
@@ -115,6 +126,12 @@ export default defineConfig({
       ...books,
     ],
     sidebar: {
+      '/books/go-concurrency/': [
+        {
+          text: 'Go 语言并发之道',
+          items: goConcurrencyChapters,
+        },
+      ],
       '/books/go-guide/': [
         {
           text: 'Go 语言学习指南',
