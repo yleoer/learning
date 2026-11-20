@@ -196,6 +196,38 @@ const systemChapters = [
   { text: '第 8 章 Linux 系统观测、性能排查与实战命令', link: '/books/system/chapter-08' },
 ]
 
+const networkSidebar = [
+  {
+    text: '图解网络',
+    items: [
+      { text: '前言与章节导航', link: '/books/network/' },
+    ],
+  },
+  {
+    text: '一、基础分层与 IP 网络',
+    items: [
+      { text: '第 1 章 网络分层模型、一次网页访问全过程与 Linux 协议栈', link: '/books/network/chapter-01' },
+      { text: '第 2 章 IP 寻址、路由转发、辅助协议与 ICMP 诊断', link: '/books/network/chapter-02' },
+    ],
+  },
+  {
+    text: '二、传输层 TCP 深度剖析',
+    items: [
+      { text: '第 3 章 TCP 基础、连接建立与半/全连接队列', link: '/books/network/chapter-03' },
+      { text: '第 4 章 TCP 连接断开、TIME_WAIT 与边界异常处理', link: '/books/network/chapter-04' },
+      { text: '第 5 章 TCP 可靠传输、流量控制、拥塞控制与性能调优', link: '/books/network/chapter-05' },
+    ],
+  },
+  {
+    text: '三、HTTP、HTTPS 与现代网络实战',
+    items: [
+      { text: '第 6 章 HTTP 语义、缓存机制与 HTTP/1.1 到 HTTP/3 协议演进', link: '/books/network/chapter-06' },
+      { text: '第 7 章 HTTPS、PKI 信任体系与 TLS 1.3 现代安全演进', link: '/books/network/chapter-07' },
+      { text: '第 8 章 现代应用通信协议与网络排障实战', link: '/books/network/chapter-08' },
+    ],
+  },
+]
+
 function tokenizeSearchText(text: string): string[] {
   const terms: string[] = []
   const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/u
@@ -287,6 +319,7 @@ export default defineConfig({
           items: systemChapters,
         },
       ],
+      '/books/network/': networkSidebar,
       '/books/': [
         {
           text: '书籍与专题',
