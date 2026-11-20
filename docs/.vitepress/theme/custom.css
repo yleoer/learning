@@ -414,62 +414,188 @@ body {
   margin: 0 auto 48px;
   padding: 0 24px;
   max-width: 1280px;
+  scroll-margin-top: calc(var(--vp-nav-height) + 16px);
 }
 
 .home-topics-inner {
-  display: grid;
-  gap: 24px 48px;
   border-block: 1px solid var(--vp-c-divider);
-  padding: 24px 0;
+  padding: 32px 0;
   font-size: 14px;
   line-height: 1.5;
 }
 
-.home-topics h2 {
-  margin: 0 0 12px;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.available-topic + .available-topic {
-  margin-top: 16px;
-}
-
-.topic-heading {
+.shelf-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 24px;
 }
 
-.topic-heading > a {
-  font-size: 18px;
+.home-topics h2 {
+  margin: 0;
+  color: var(--vp-c-text-1);
+  font-size: 22px;
   font-weight: 600;
+  line-height: 1.25;
 }
 
-.home-topics p {
-  margin: 8px 0 0;
+.shelf-subtitle {
+  margin: 6px 0 0;
   color: var(--vp-c-text-2);
 }
 
-.home-topics a {
+.shelf-stats {
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.shelf-stats strong {
+  color: var(--vp-c-text-1);
+  font-weight: 600;
+}
+
+.shelf-group + .shelf-group {
+  margin-top: 24px;
+}
+
+.shelf-group-title {
+  margin: 0 0 12px;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.shelf-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.shelf-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px 22px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.shelf-card:hover {
+  border-color: var(--vp-c-border);
+  background: var(--claude-surface);
+}
+
+.shelf-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shelf-card-title {
+  color: var(--vp-c-text-1);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+.shelf-card-title:hover {
   color: var(--claude-link);
+  text-decoration: underline;
   text-underline-offset: 3px;
 }
 
-.home-topics a:hover {
-  color: var(--claude-link-hover);
-  text-decoration: underline;
+.shelf-card-count {
+  flex-shrink: 0;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+  font-weight: 500;
 }
 
-.topic-status {
+.shelf-card-summary {
+  margin: 10px 0 16px;
   color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.shelf-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.shelf-card-baseline {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-family: var(--claude-mono-font);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.shelf-card-links {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.shelf-card-links a,
+.planned-topics a {
+  color: var(--claude-link);
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+
+.shelf-card-links a:hover,
+.planned-topics a:hover {
+  color: var(--claude-link-hover);
+  text-decoration: underline;
 }
 
 .home-topics a:focus-visible,
 .chapter-outline :is(a, button):focus-visible {
   outline: 2px solid var(--claude-link);
-  outline-offset: -2px;
+  outline-offset: 2px;
+}
+
+.planned-topics {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.planned-topics h3 {
+  margin: 0 0 6px;
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.planned-topics p {
+  margin: 0;
+  color: var(--vp-c-text-2);
 }
 
 .planned-topics ul {
@@ -492,13 +618,19 @@ body {
   }
 }
 
+@media (min-width: 768px) {
+  .shelf-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (min-width: 960px) {
   .home-topics {
     padding-inline: 64px;
   }
 
-  .home-topics-inner {
-    grid-template-columns: 1fr 1fr;
+  .shelf-grid.is-three-col {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
