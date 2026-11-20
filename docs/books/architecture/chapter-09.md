@@ -9,7 +9,7 @@ description: 深入剖析 Linux 虚拟网络与 Cilium eBPF 加速、Kubernetes 
 
 单机容器隔离只是云原生的起点；要将数千台物理机编织为一台对应用透明的“数据中心级超级计算机”，还必须打通三大底层基础设施平面：容器跨主机通信平面（CNI）、有状态数据跨节点漂移挂载平面（CSI），以及透明接管七层治理与零信任安全的服务网格平面（Service Mesh）。本章整合原书第 12、13、15 章，全面对齐 **Cilium eBPF、CSI 全外置化与 Istio Ambient Mesh（GA）** 等当代生产标准：首先穿透 `veth`/Bridge/VXLAN 内核路径与 **eBPF Socket 直通加速**；其次梳理 PV/PVC 动态供给、**`ReadWriteOncePod`** 与 CSI 三阶段六操作；最后剖析 Envoy `xDS` 协议及从传统 Sidecar 向无边车架构的范式跃迁。
 
-> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Docker 29.10、Linux/AMD64。
+> 核对日期：2026 年 11 月 20 日；基于 Kubernetes CSI / Gateway API、Cilium、Envoy 与 Istio 官方文档核对（本地参考环境为 Go 1.27.4、Docker 29.10、Linux/AMD64，未在真实多节点 Kubernetes / Istio 集群执行性能压测）。
 
 ## 9.1 Linux 虚拟网络、CNI 模式与 Cilium eBPF 加速 {#ch9-1}
 
@@ -108,7 +108,7 @@ Kubernetes 现已将所有早期的树内（In-Tree）云存储驱动与冻结�
                     └──► (仅当目标命名空间确需灰度分流/重试/熔断等复杂七层治理时，才按需经过独立的 L7 Waypoint Proxy 集群！)
 ```
 
-配合节点内 eBPF / 命名空间套接字重定向，`ztunnel` 将网格常驻内存与 CPU 开销削减了 **75%～90%**，标志着服务网格正式步入轻量透明成熟期。
+配合节点内透明流量重定向与共享的 Rust `ztunnel` 代理，Ambient Mesh 把原本随 Pod 数量线性增长的固定边车底噪转化为按节点共享的四层开销与按需部署的七层 `Waypoint` 开销，标志着服务网格步入轻量透明演进阶段。不过需要强调：**切换至 Ambient 模式后的真实 CPU 与内存净收益并非固定的普适百分比，而高度取决于单节点 Pod 密度、节点共享 `ztunnel` 承载的并发连接与吞吐负载、按需部署的 `Waypoint Proxy` 副本数及七层规则复杂度**，上线前应参照 Istio 官方性能基准测试方法，在目标拓扑与真实流量模型下合并计量 `ztunnel`、`Waypoint` 与控制面的总资源占用和尾延迟后再做容量决策。
 
 ## 练习 {#ch9-exercises}
 
@@ -130,18 +130,19 @@ Kubernetes 现已将所有早期的树内（In-Tree）云存储驱动与冻结�
 
 </details>
 
-### 练习 2：核算 2000 Pod 集群从传统 Sidecar 迁移至 Ambient Mesh 的收益与网关路由升级
+### 练习 2：评估 2000 Pod 集群从传统 Sidecar 迁移至 Ambient Mesh 的结构变化与路由升级
 
 某企业集群运行着 200 个微服务共 **2000 个业务 Pod**（分布在 **40 台** 64 核工作节点上），此前全部注入了传统 Envoy Sidecar（平均每个 Envoy 容器常驻内存 `120 MiB`）。日常 85% 的内部服务仅需满足合规要求的“双向 mTLS 加密与服务间调用白名单鉴权”，仅有 15%（约 30 个核心服务）需要七层按 Header 金丝雀灰度与重试治理。同时团队此前基于已归档的 SMI 规范编写流量切分配置。请回答：
-1. 迁移至 **Istio Ambient Mesh** 后，代理进程部署数量与常驻内存开销会发生什么量级变化？网格自身热升级是否还会触发 2000 个业务 Pod 重启？
+1. 传统 Sidecar 模式的边车静态内存基准开销是多少？迁移至 **Istio Ambient Mesh** 后，代理进程部署结构、升级耦合度以及资源评估方法会发生哪些关键变化？
 2. 淘汰 SMI 后，南北向入口与东西向金丝雀灰度应统一迁移至什么官方标准 API？
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **代理规模与内存收益核算及零重启热升级**：
-   - **传统 Sidecar 模式**：需运行 **2000 个** Envoy 实例，仅边车常驻内存即消耗 `2000 × 120 MiB ≈ 234.4 GiB`！且升级 Envoy 必须把 2000 个业务 Pod 挨个滚动销毁重建一遍。
-   - **Ambient Mesh 模式**：2000 个业务 Pod 内部**零边车容器**！每台物理节点仅运行 1 个共享的 Rust **`ztunnel`** DaemonSet——共 **40 个** `ztunnel` 进程，每进程仅约 `30～50 MiB`，总计不到 **`2 GiB`** 即可包揽全集群 100% 服务的 mTLS 与四层 `AuthorizationPolicy` 白名单；仅针对那 15% 需要七层治理的服务按需部署约 10～30 个共享 **`Waypoint Proxy`**（约 `3～4 GiB`）。网格代理总内存从 `234 GiB` 骤降至 **`6 GiB` 以内（节省超 97%）**，且升级 `ztunnel` 或 `Waypoint` 对业务 Pod **完全无感、零重启**！
+1. **代理结构变化、升级解耦与基于实测的资源评估**：
+   - **传统 Sidecar 模式基线**：需伴随业务 Pod 运行 **2000 个** Envoy 实例，仅静态边车常驻内存基线即消耗 `2000 × 120 MiB ≈ 234.4 GiB`（尚未计入高并发下连接池与配置快照增长）；且升级 Envoy 安全补丁时必须将 2000 个业务 Pod 挨个滚动销毁重建。
+   - **Ambient Mesh 架构变化与零重启升级**：2000 个业务 Pod 内部**零边车容器**——40 台节点上仅部署 **40 个**节点级共享的 Rust **`ztunnel`** DaemonSet 承接全集群 100% 服务的 mTLS 与四层 `AuthorizationPolicy`；仅对那 15% 需要七层治理的服务按命名空间或服务维度独立部署并按实际七层流量弹性扩缩 **`Waypoint Proxy`**。代理数量从“随 Pod 数量线性膨胀”转为“随节点数与七层流量按需伸缩”，且升级 `ztunnel` 或 `Waypoint` 与业务 Pod 生命周期彻底解耦，**无需重启业务 Pod**。
+   - **真实收益须结合流量基准实测**：切忌套用无条件的固定节省百分比拍脑袋估算；落地前应参照 **Istio 官方性能基准方法（Performance and Scalability）**，在代表性并发连接数、QPS 与负载体量下，合并观测 40 个 `ztunnel` 实例的运行期 CPU/内存、按需 `Waypoint Proxy` 副本数及其七层规则（Header 路由、重试、遥测）开销，以及多一跳 `Waypoint` 对七层服务 P99 延迟的影响，综合核定真实资源净收益。
 2. **统一路由标准 API**：
    - 全面迁移至正式 GA 的 **`Kubernetes Gateway API`**——通过 `HTTPRoute` / `GRPCRoute` 的 `parentRefs` 区分场景：指向边缘 `Gateway` 即配置南北向入口路由，指向内部 `Service` 即按 GAMMA 规范配置东西向网格按权重/Header 金丝雀分流。
 
@@ -181,7 +182,7 @@ Kubernetes 现已将所有早期的树内（In-Tree）云存储驱动与冻结�
 <summary>查看参考答案</summary>
 
 1. **传统 Sidecar 流量劫持原理**：Pod 创建时由 `MutatingAdmissionWebhook` 自动注入 Envoy 边车与初始化网络规则（通过 Istio CNI 或 `init` 容器配置 Netfilter/`iptables` 或 eBPF）：将进入 Pod 的所有流量重定向到 Envoy 入站端口 `15006`，将业务进程发出的所有流量重定向到 Envoy 出站端口 `15001`，同时**通过匹配 Envoy 进程专属的 `UID 1337` 放行 Envoy 自己发出的真实网络包**，从而避免无限死循环劫持。
-2. **演进出 Ambient Mesh 的原因**：每 Pod 一边车在大规模集群中带来了沉重的**内存底噪、双跳七层解析延迟以及升级边车必须重启业务 Pod 的运维耦合**；Ambient Mesh 将四层安全下沉为每台宿主机仅跑 1 个用 Rust 编写的超轻量共享 `ztunnel`，将七层复杂路由抽离为按需部署的独立 `Waypoint Proxy`，在保持对业务 100% 零代码侵入的同时消除了九成以上的边车资源税。
+2. **演进出 Ambient Mesh 的原因**：每 Pod 一边车在大规模集群中带来了沉重的**内存底噪、双跳七层解析延迟以及升级边车必须重启业务 Pod 的运维耦合**；Ambient Mesh 将四层安全下沉为每台宿主机共享的 Rust `ztunnel`，将七层复杂路由抽离为按需部署的独立 `Waypoint Proxy`，在保持对业务零代码侵入的同时显著缓解了随 Pod 数量线性膨胀的边车底噪与升级耦合（实际资源收益视节点 Pod 密度、七层流量占比与 `Waypoint` 规模实测而定）。
 
 </details>
 
@@ -191,4 +192,5 @@ Kubernetes 现已将所有早期的树内（In-Tree）云存储驱动与冻结�
 - [Kubernetes CSI Developer Documentation：CSI Architecture & Volume Lifecycle](https://kubernetes-csi.github.io/docs/)
 - [Envoy Proxy Documentation：xDS REST and gRPC Protocol Specification](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol)
 - [Istio Official Documentation：Ambient Mode Architecture（`ztunnel` & Waypoint Proxies）](https://istio.io/latest/docs/ambient/architecture/)
+- [Istio Official Documentation：Performance and Scalability Benchmarking](https://istio.io/latest/docs/ops/deployment/performance-and-scalability/)
 - [Kubernetes Gateway API Specification：Mesh Traffic Management（GAMMA）](https://gateway-api.sigs.k8s.io/mesh/)

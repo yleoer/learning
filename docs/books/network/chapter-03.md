@@ -96,8 +96,8 @@ TCP 建连为何必须是**三次握手**，而不是两次或四次？核心原
 
 | 丢包阶段 | 触发行为与内核控制参数 | Linux 6.12 LTS 默认行为（纠正原书 2.6.32 旧值） |
 | --- | --- | --- |
-| **第 1 次 `SYN` 丢包** | 客户端 `SYN_SENT` 收不到 `SYN+ACK`，指数退避重传 `SYN` | `net.ipv4.tcp_syn_retries` **默认值为 `6`**（原书基于 CentOS 6.5 写为 `5`），退避间隔 1, 2, 4, 8, 16, 32 s，再等 64 s 后报错 `ETIMEDOUT`，总耗时约 **127 秒**（原书 `5` 次对应 63 秒） |
-| **第 2 次 `SYN+ACK` 丢包** | 双端同时超时重传：客户端重传 `SYN`，服务端在 `SYN_RCVD` 重传 `SYN+ACK` | 客户端受 `tcp_syn_retries`（默认 `6`）控制；服务端受 `net.ipv4.tcp_synack_retries`（默认 **`5`**，约 63 秒后销毁半连接）控制 |
+| **第 1 次 `SYN` 丢包** | 客户端 `SYN_SENT` 收不到 `SYN+ACK`，按线性+指数退避重传 `SYN` | 在 Linux 6.12 默认 `net.ipv4.tcp_syn_retries = 6` 与 `net.ipv4.tcp_syn_linear_timeouts = 4` 下（原书基于 CentOS 6.5 写为 `5` 次约 63 秒），初始 RTO 为 1 s 时前 4 次超时保持线性 1 s、随后转为指数退避，约在 **67 s** 发出最后一次重传、约 **131 s** 后报错 `ETIMEDOUT`（纯指数退避旧内核下 `6` 次才是 127 s）；实际工程中应用层可另设 `connect` 超时，且 `tcp_syn_linear_timeouts` 不作用于被动端 `SYN+ACK` 重传 |
+| **第 2 次 `SYN+ACK` 丢包** | 双端同时超时重传：客户端重传 `SYN`，服务端在 `SYN_RCVD` 重传 `SYN+ACK` | 客户端受 `tcp_syn_retries`（默认 `6`）与 `tcp_syn_linear_timeouts`（默认 `4`）控制；服务端受 `net.ipv4.tcp_synack_retries`（默认 **`5`**，纯指数退避，不受 `tcp_syn_linear_timeouts` 影响，约 63 秒后销毁半连接）控制 |
 | **第 3 次 `ACK` 丢包** | 纯 `ACK` 本身**绝不重传**；服务端因停在 `SYN_RCVD` 超时重传 `SYN+ACK`（受 `tcp_synack_retries` 控制） | 客户端此时已进入 `ESTABLISHED`：若客户端紧接着发送首个应用数据包（自带 `ACK=1` 且 `seq`/`ack` 与第 3 次握手完全一致），**服务端在 `SYN_RCVD` 收到该数据包即可自动完成建连并接收数据**；若双方均不发数据，服务端 5 次重传 `SYN+ACK` 后单方面清理半连接，客户端则保持假存活直至发数据超时（`tcp_retries2`）或 Keepalive 探测失败 |
 
 ## 3.3 半连接队列、全连接队列与 SYN Flood 防御 {#ch3-3}
@@ -207,6 +207,8 @@ TcpExtListenDrops               1842
    - 修改 Nginx 配置为 `listen 80 backlog=4096;` 并重载/重启使 `listen()` 重新生效（同时确认 `somaxconn >= 4096`）；
    - 更关键的是排查 Nginx Worker 进程为何 `accept()` 消费变慢（如 Worker 数量不足、同步阻塞逻辑或 CPU 跑满），因为单纯调大队列只能吸收短时突发，无法解决长期消费能力不足。
 
+> 延伸对照：本章侧重 TCP 协议与三次握手队列机制本身，保持本专题独立可读；若希望结合系统级观测方法查看内核与生产压测下的完整排障现场，可对照[《图解系统》第 8 章全连接队列溢出排障](../system/chapter-08#ch8-3-2)。
+
 </details>
 
 ### 练习 3：设计简洁可靠的 TCP 应用层二进制分帧格式
@@ -298,7 +300,7 @@ TcpExtListenDrops               1842
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：Linux 6.12 默认 `net.ipv4.tcp_syn_retries = 6`，按 1, 2, 4, 8, 16, 32 s 重传并再等 64 s，总计约 **127 秒**后返回 `ETIMEDOUT`（注意：老旧 Linux 2.6.32 默认为 `5` 次约 63 秒）。
+**结论**：在 Linux 6.12 默认 `net.ipv4.tcp_syn_retries = 6` 与 `net.ipv4.tcp_syn_linear_timeouts = 4` 下，初始 RTO 为 1 s 时前 4 次超时线性等待 1 s、随后转为指数退避，约在 **67 s** 发出最后一次重传、约 **131 s** 后超时返回 `ETIMEDOUT`（纯指数退避旧内核下 `6` 次才是 127 s，老旧 Linux 2.6.32 默认 `5` 次约 63 s）。注意应用层通常可另设较短的 `connect` 超时，且 `tcp_syn_linear_timeouts` 不作用于被动端 `SYN+ACK` 重传。
 
 **关键依据（溢出排查）**：
 - 查全连接队列：`ss -lnt` 对比 `Recv-Q`（当前排队）与 `Send-Q`（上限 `min(somaxconn, backlog)`），配合 `nstat -az TcpExtListenOverflows` 看全连接溢出增量；
@@ -325,5 +327,5 @@ TcpExtListenDrops               1842
 - [RFC 7323: TCP Extensions for High Performance（Window Scale / Timestamps / PAWS）](https://datatracker.ietf.org/doc/html/rfc7323)
 - [RFC 6528: Defending against Sequence Number Attacks](https://datatracker.ietf.org/doc/html/rfc6528)
 - [RFC 7413: TCP Fast Open](https://datatracker.ietf.org/doc/html/rfc7413)
-- [Linux Kernel Documentation: IP Sysctl (`tcp_syn_retries`, `tcp_syncookies`, `tcp_fastopen`, `somaxconn`)](https://docs.kernel.org/networking/ip-sysctl.html)
+- [Linux Kernel Documentation: IP Sysctl (`tcp_syn_retries`, `tcp_syn_linear_timeouts`, `tcp_syncookies`, `tcp_fastopen`, `somaxconn`)](https://docs.kernel.org/networking/ip-sysctl.html)
 - [Linux Programmer's Manual: `tcp(7)` 与 `ss(8)`](https://man7.org/linux/man-pages/man7/tcp.7.html)

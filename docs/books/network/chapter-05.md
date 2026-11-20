@@ -24,7 +24,7 @@ description: 对齐 RFC 6298、RFC 8985、RFC 9438 与 Linux 6.12 LTS，系统�
 ```text
 SRTT   = (1 - α) × SRTT + α × RTT               （平滑往返时间，推荐 α = 1/8 = 0.125）
 RTTVAR = (1 - β) × RTTVAR + β × |SRTT - RTT|    （RTT 波动偏差，推荐 β = 1/4 = 0.25）
-RTO    = SRTT + max(G, 4 × RTTVAR)              （G 为时钟粒度；Linux 最小 RTO 为 200 ms）
+RTO    = SRTT + max(G, 4 × RTTVAR)              （G 为时钟粒度；RFC 6298 §2.4 规定小于 1 s 时 SHOULD 向上取整至 1 s，Linux 最小 RTO 为 200 ms）
 ```
 
 若重传后依然超时，触发**指数退避**（RTO 翻倍，Linux 上限 `TCP_RTO_MAX = 120 s`），且重传样本因无法区分 ACK 对应原始包还是重传包而不参与 RTT 采样（Karn 算法）。
@@ -176,16 +176,18 @@ BDP = 链路带宽（Byte/s） × RTT（s）
 
 某 TCP 连接当前平滑往返时间 `SRTT = 100 ms`，波动偏差 `RTTVAR = 20 ms`（参数 `α = 0.125`, `β = 0.25`，时钟粒度可忽略）。紧接着测得一次新的有效样本 `RTT = 180 ms`：
 
-1. 请计算更新后的 `RTTVAR`、`SRTT` 和新的 `RTO`（注意 RFC 6298 先用旧 `SRTT` 算 `RTTVAR` 再更新 `SRTT`）。
+1. 请计算更新后的 `RTTVAR`、`SRTT`，并分别给出：公式未截断的原始 `RTO`、严格按 **RFC 6298 §2.4** 最小 RTO 规则向上取整后的取值，以及 **Linux 实现**实际采用的 `RTO`（注意 RFC 6298 §2.3 先用旧 `SRTT` 算 `RTTVAR` 再更新 `SRTT`）。
 2. 若该连接随后重传了一个超时报文段并收到了确认，这次重传样本应不应该代入上述公式更新 `SRTT`？为什么？
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **按 RFC 6298 §2.3 顺序计算**：
+1. **按 RFC 6298 §§2.3–2.4 计算并区分规范与实现**：
    - `RTTVAR' = (1 - 0.25) × 20 + 0.25 × |100 - 180| = 15 + 20 = 35 ms`
    - `SRTT' = (1 - 0.125) × 100 + 0.125 × 180 = 87.5 + 22.5 = 110 ms`
-   - `RTO = SRTT' + 4 × RTTVAR' = 110 + 4 × 35 = 250 ms`
+   - **公式未截断原始值**：`RTO = SRTT' + 4 × RTTVAR' = 110 + 4 × 35 = 250 ms`；
+   - **按 RFC 6298 §2.4 规则向上取整值**：规范明确规定若计算结果小于 1 s，**SHOULD** 向上取整至 **`1000 ms`（1 s）**；
+   - **Linux 实际取值**：Linux 内核出于现代低延迟网络实践采用最小 RTO **`200 ms`**（`TCP_RTO_MIN`），由于 `250 ms >= 200 ms`，故 Linux 实际保持 **`250 ms`**。
 2. **不应代入（Karn 算法）**：在未开启 TCP Timestamps 时，发送方收到重传段的 ACK 后无法分辨该 ACK 是对原始包还是对重传包的确认（重传歧义），代入计算会严重扭曲 RTT 估算。（注：开启 `tcp_timestamps` 后可借助回显的 `TSecr` 消除重传歧义，而 QUIC 通过单调递增 Packet Number 从协议层根除了该问题。）
 
 </details>

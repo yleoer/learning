@@ -186,7 +186,7 @@ build: vet
 
 ### 练习 1：编写带清理目标的构建 Makefile
 
-在 [1.3 节](#ch1-3) `Makefile` 的基础上补充 `clean` 伪目标，一并清理构建缓存与 `bin/hello`（及 `bin/hello.exe`），并说明为何不能只写 `go clean ./...`。
+在 [1.3 节](#ch1-3) `Makefile` 的基础上补充 `clean` 伪目标，清理包目录下残留的默认构建产物与 `bin/hello`（及 `bin/hello.exe`），并说明 `go clean ./...` 的清理边界——为何它既不会删除自定义 `-o` 输出文件，也不会清空共享构建缓存（以及确需清空构建缓存时应使用什么命令）。
 
 <details>
 <summary>查看参考答案</summary>
@@ -210,7 +210,9 @@ clean:
 	rm -f bin/hello bin/hello.exe
 ```
 
-`go clean ./...` 只会移除构建缓存与默认命名规则在包目录下生成的产物，无法感知 `go build -o bin/hello .` 自定义的输出位置，因此必须显式删除 `bin/hello` 与跨平台可能生成的 `bin/hello.exe`。
+- `go clean ./...` 只会移除各包源码目录下由默认命名规则生成的构建产物与临时目标文件（例如不加 `-o` 时留在包目录内的可执行文件），**不会清空 Go 共享构建缓存（`GOCACHE`）**。
+- 删除 `go build -o bin/hello .` 生成的自定义路径产物是另一回事：`go clean` 不追踪自定义 `-o` 输出位置，必须显式用 `rm -f bin/hello bin/hello.exe` 清理（兼顾跨平台 `.exe` 后缀）。
+- 若确需清空整个共享构建缓存，应执行 **`go clean -cache`**；该命令会清空本机所有 Go 项目共用的编译缓存，通常按需单独执行，不放进日常项目的 `make clean` 中。
 
 </details>
 

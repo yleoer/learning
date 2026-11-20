@@ -33,7 +33,7 @@ SQL 标准定义了四种隔离级别以划定上述异常的容忍下限，而 
 | `READ UNCOMMITTED` | 禁止 | 可能 | 可能 | 可能 | 普通 `SELECT` 直接读取聚簇索引最新版本，无快照开销但破坏业务一致性 |
 | `READ COMMITTED` | 禁止 | 禁止 | 可能 | 可能 | 每次普通 `SELECT` 重新创建独立 `ReadView`，仅读取语句开始前已提交版本 |
 | `REPEATABLE READ`（默认） | 禁止 | 禁止 | 禁止 | 可能 | **绝大部分场景已消除幻读**：快照读复用首个 `ReadView`，锁定读加 `Next-Key` 锁；仅混合读写特例（见[9.4 节](#ch9-4)）会浮现新行 |
-| `SERIALIZABLE` | 禁止 | 禁止 | 禁止 | 禁止 | `autocommit = 0` 时普通 `SELECT` 自动转为 `FOR SHARE` 加锁读；`autocommit = 1` 单语句只读仍走无锁快照 |
+| `SERIALIZABLE` | 禁止 | 禁止 | 禁止 | 禁止 | 显式事务内或 `autocommit = 0` 时普通 `SELECT` 自动转为 `FOR SHARE` 加锁读；仅独立自动提交的单语句非锁定只读查询适用无锁快照（见[10.1.1 节](./chapter-10#ch10-1-1)） |
 
 运行时可通过 `SET [GLOBAL | SESSION] TRANSACTION ISOLATION LEVEL <level>` 动态调整隔离级别，其中 `<level>` 支持 `READ UNCOMMITTED`、`READ COMMITTED`、`REPEATABLE READ`、`SERIALIZABLE` 四种空格分隔写法；三种作用域的生效边界截然不同：
 
@@ -97,9 +97,9 @@ COMMIT;
 | `m_ids` | `m_ids` | 生成 `ReadView` 瞬间，系统中**活跃未提交的读写事务 ID 有序列表**——仅含已分配非零 `trx_id` 的事务 |
 | `min_trx_id` | `m_up_limit_id` | 生成瞬间 `m_ids` 中的最小值；凡 `< min_trx_id` 的事务必定早已提交；若 `m_ids` 为空则等于 `max_trx_id` |
 | `max_trx_id` | `m_low_limit_id` | 生成瞬间系统**即将分配给下一个读写事务的 ID**——**绝非 `m_ids` 的最大值**！若 `trx 105` 创建后迅速提交而 `80, 100` 仍未提交，则 `m_ids = [80, 100]`，但 `max_trx_id = 106` |
-| `creator_trx_id` | `m_creator_trx_id` | 创建该 `ReadView` 的事务自身 ID；纯只读事务因惰性分配规则未领真实 ID，故初始恒为 **`0`** |
+| `creator_trx_id` | `m_creator_trx_id` | 创建该 `ReadView` 的事务自身 ID；尚未分配真实 `trx_id` 的普通非锁定只读事务，该值初始为 **`0`** |
 
-关于 `creator_trx_id = 0` 有一个可实测验证的细节：开启事务后仅执行普通 `SELECT` 时，查询 `information_schema.INNODB_TRX` 会看到类似 `405154356199424` 的巨大十进制 `trx_id`——这并非真实的全局事务号，而是 InnoDB 为只读事务用内存结构体指针拼接高位标记生成的虚拟展示号；其内核 `ReadView.creator_trx_id` 依然是 `0`，直至事务首次执行真正改动数据的写语句时，才领用真实的递增 `trx_id` 并同步写入 `creator_trx_id`。
+关于 `creator_trx_id = 0` 与真实 `trx_id` 分配时机，有一个可实测验证的细节：开启事务后仅执行**普通非锁定只读 `SELECT`** 时，InnoDB 可跳过分配真实事务号，查询 `information_schema.INNODB_TRX` 会看到类似 `405154356199424` 的巨大十进制 `trx_id`——这是用内存结构体指针拼接高位标记生成的虚拟展示号，其内核 `ReadView.creator_trx_id` 依然是 `0`。但**并非必须等到首行被改写（DML）才分配真实事务号**：除写操作外，MySQL 8.4 实测在显式事务中执行 `SELECT ... FOR UPDATE` 等部分锁定读（即使 `trx_rows_modified = 0`）同样会领用真实的递增 `trx_id`（若此前已建 `ReadView`，也会同步更新至 `creator_trx_id`），详见[8.3 节](./chapter-08#ch8-3)。
 
 拿到版本链头部记录的 `DB_TRX_ID`（记为 `trx_id`）后，InnoDB 严格按以下**四步决策表**判断该版本对当前 `ReadView` 是否可见：
 

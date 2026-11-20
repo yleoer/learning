@@ -188,10 +188,10 @@ EXPLAIN SELECT * FROM t1 WHERE t1.a IN (SELECT t2.a FROM t2 WHERE t2.id < 500);
 -- /*+ SEMIJOIN(@s FIRSTMATCH)  */ -> t2 Extra: Using where; Using index; FirstMatch(t1)
 ```
 
-与半连接相对，求“不存在匹配项”的逻辑自 **MySQL 8.0.17** 起正式支持重写为**反连接**（Anti-join），其树形执行计划显示为 `Nested loop antijoin` 或 `Hash antijoin`，覆盖 `NOT EXISTS (...)`、外连接配 `WHERE inner_pk IS NULL` 反筛选，以及**两侧表达式均声明为 `NOT NULL` 的 `NOT IN (...)`**。
+与半连接相对，求“不存在匹配项”的逻辑自 **MySQL 8.0.17** 起正式支持在满足查询形状前提下重写为**反连接**（Anti-join），其树形执行计划显示为 `Nested loop antijoin` 或 `Hash antijoin`，常见于简单相关 `NOT EXISTS (...)`、外连接配 `WHERE inner_pk IS NULL` 反筛选，以及**两侧表达式均声明为 `NOT NULL` 的 `NOT IN (...)`**。
 
 > [!WARNING]
-> **生产铁律：严禁在可空列上使用 `NOT IN` 子查询，一律改用 `NOT EXISTS`！** 这背后潜藏着“结果全空”与“执行计划降级”双重灾难。
+> **生产避坑准则：慎在可空列上使用 `NOT IN` 子查询；改写为 `NOT EXISTS` 前务必先确认 `NULL` 语义与执行计划！** 可空列 `NOT IN` 潜藏“内表含 `NULL` 导致结果全空”与“执行计划降级”双重风险，但当外表连接列也可空时，`NOT IN` 与 `NOT EXISTS` 并不机械等价。
 
 通过 MySQL 8.4.13 实测可直观复现 `NOT IN` 的空值陷阱。设 `users_demo` 含 `(1, 10), (2, 20), (3, 30)`，黑名单表 `blacklist_demo(id PK, code INT NULL)` 含 `(1, 10)` 与 **`(2, NULL)`**：
 
@@ -200,16 +200,20 @@ EXPLAIN SELECT * FROM t1 WHERE t1.a IN (SELECT t2.a FROM t2 WHERE t2.id < 500);
 SELECT * FROM users_demo WHERE code NOT IN (SELECT code FROM blacklist_demo);
 -- Empty set (0.00 sec)
 
--- 正确写法：使用 NOT EXISTS，准确返回 (2, 20) 与 (3, 30)，且底层自动走高效 Hash antijoin！
+-- 改写为 NOT EXISTS：返回 (2, 20) 与 (3, 30)，且简单等值相关形态自动走高效 Hash antijoin
 SELECT * FROM users_demo u WHERE NOT EXISTS (SELECT 1 FROM blacklist_demo b WHERE b.code = u.code);
 -- 返回 2 行：(2, 20), (3, 30)
 -- EXPLAIN FORMAT=TREE: -> Hash antijoin (b.`code` = u.`code`)
 ```
 
-根因来自 SQL 三值逻辑——即 `TRUE`、`FALSE` 与 `UNKNOWN`：
+其底层根因与改写边界需要同时把握三个层面：
 
-1. **语义全空灾难**：`code NOT IN (10, NULL)` 等价展开为 `code <> 10 AND code <> NULL`。代入 `code = 20` 时，`20 <> 10` 为 `TRUE`，但任何值与 `NULL` 比较（`20 <> NULL`）结果恒为 `UNKNOWN`；在逻辑与运算中 `TRUE AND UNKNOWN` 仍得 **`UNKNOWN`**！而 `WHERE` 子句只放行求值为 `TRUE` 的行，导致**只要子查询结果里混入哪怕一行 `NULL`，外层所有记录全军覆没，返回 0 行**。而 `EXISTS` 子查询返回的是布尔存在性判断，匹配不到任何 `TRUE` 行即判为不存在，天然免疫 `NULL` 干扰。
-2. **优化器降级灾难**：MySQL 8.4 实测表明，哪怕 `blacklist_demo` 当前没有任何 `NULL` 数据——甚至你在子查询内手动加了 `WHERE code IS NOT NULL`——只要 `code` 列的表结构元数据允许为 `NULL`，优化器为了维护 `NOT IN` 严格的三值语义，**依然拒绝将其重写为 `antijoin`**，被迫退化为挂载 `<is_not_null_test>` 探针的 `dependent` 相关子查询逐行探测；唯有字段本身声明为 `NOT NULL` 或改写为 `NOT EXISTS`，才能无条件解锁 `Hash antijoin` 与 `Nested loop antijoin`。
+1. **内表含 `NULL` 引发语义全空灾难**：基于 SQL 三值逻辑（`TRUE`、`FALSE`、`UNKNOWN`），`code NOT IN (10, NULL)` 等价展开为 `code <> 10 AND code <> NULL`。代入 `code = 20` 时，`20 <> 10` 为 `TRUE`，但任何值与 `NULL` 比较（`20 <> NULL`）结果恒为 `UNKNOWN`；在逻辑与运算中 `TRUE AND UNKNOWN` 仍得 **`UNKNOWN`**！而 `WHERE` 子句只放行求值为 `TRUE` 的行，导致**只要子查询结果里混入哪怕一行 `NULL`，外层所有记录全军覆没，返回 0 行**。而 `EXISTS` 子查询返回的是布尔存在性判断，匹配不到任何 `TRUE` 行即判为不存在，天然免疫内表 `NULL` 干扰。
+2. **外表连接列也可空时，`NOT IN` 与 `NOT EXISTS` 并不机械等价**：若将外表 `users_demo` 调整为含 `(1, 10), (2, 20), (3, NULL)`，且黑名单表 `blacklist_demo` 仅含 `(1, 10)`（内表无 `NULL`）：
+   - 执行 `NOT IN` 时，对 `(3, NULL)` 计算 `NULL <> 10` 得 `UNKNOWN`，该行被过滤，**仅返回 `id = 2`**；
+   - 执行 `WHERE NOT EXISTS (SELECT 1 FROM blacklist_demo b WHERE b.code = u.code)` 时，对 `(3, NULL)` 计算 `b.code = NULL` 恒为 `UNKNOWN`、子查询返回 `0` 行，故 `NOT EXISTS` 判为 `TRUE`，**会保留并返回 `id = 2` 与 `id = 3`**。
+   因此改写前**必须先明确业务语义**——未知编码（`u.code IS NULL`）的行究竟应该放行保留（直接用 `NOT EXISTS`），还是应该剔除（须显式补充 `WHERE u.code IS NOT NULL AND NOT EXISTS (...)`），绝不能当成无差异的机械等价替换。
+3. **执行计划降级与反连接（Antijoin）的形状限制**：MySQL 8.4 实测表明，哪怕 `blacklist_demo` 当前没有任何 `NULL` 数据——甚至你在子查询内手动加了 `WHERE code IS NOT NULL`——只要 `code` 列的表结构元数据允许为 `NULL`，优化器为了维护 `NOT IN` 严格的三值语义，**依然拒绝将其重写为 `antijoin`**，被迫退化为挂载 `<is_not_null_test>` 探针的 `dependent` 相关子查询逐行探测。但同样需要明确：**改写为 `NOT EXISTS` 也并非无条件就能获得 `Hash antijoin` 或 `Nested loop antijoin`**——反连接转换受查询形状严格限制，一旦相关 `NOT EXISTS` 子查询内包含**分组聚合与 `HAVING`**（例如 `GROUP BY ... HAVING COUNT(*) > 1`）、`LIMIT` 或复杂 `OR` 谓词，优化器仍可能无法执行反连接重写而退化为 `dependent` 相关子查询，务必以 `EXPLAIN FORMAT=TREE` 核实最终计划。
 
 ## 练习 {#ch6-exercises}
 
@@ -286,17 +290,18 @@ WHERE dt.a > 490;
 
 </details>
 
-### 面试题 2：生产研发规范禁用可空列 NOT IN 而强制改用 NOT EXISTS 的原因
+### 面试题 2：可空列 `NOT IN` 的风险及改写为 `NOT EXISTS` 的语义与执行计划边界
 
-为什么主流数据库研发规范都严禁对可为 `NULL` 的列编写 `WHERE col NOT IN (SELECT ...)`，而要求统一改写为 `NOT EXISTS`？除了正确性隐患外，在 MySQL 8.0+ 执行计划层面还有什么差距？
+为什么主流数据库研发规范都不建议对可为 `NULL` 的列编写 `WHERE col NOT IN (SELECT ...)`？如果直接改写为 `NOT EXISTS`，在结果语义和 MySQL 8.0+ 执行计划层面分别有哪些容易踩坑的边界？
 
 <details>
 <summary>查看参考答案</summary>
 
-同时存在**正确性归零隐患**与**反连接优化失效**两重原因：
+核心涉及**内表 `NULL` 归零隐患**、**外表可空语义差异**以及**反连接重写限制**三层边界：
 
-1. **三值逻辑导致结果集瞬间归零**：`x NOT IN (a, b, NULL)` 等价于 `x <> a AND x <> b AND x <> NULL`。根据 SQL 三值逻辑，`x <> NULL` 永远求值为 `UNKNOWN`，而 `TRUE AND UNKNOWN` 仍为 `UNKNOWN`，无法通过只认 `TRUE` 的 `WHERE` 过滤。因此子查询表一旦写入哪怕 1 条 `NULL` 脏数据，整条查询会静默返回 **`0` 行空集**，造成严重业务事故；而 `NOT EXISTS` 只判断子查询是否返回行，天然忽略 `NULL` 记录。
-2. **阻塞 MySQL 8.0.17+ 的 Anti-join 重写**：当字段定义为可空（`NULL`）时，即便当前表中无 `NULL` 值甚至子查询里写了 `IS NOT NULL`，优化器为保证三值语义仍无法把 `NOT IN` 转为反连接，只能退化为逐行执行的相关子查询；而 `NOT EXISTS` 可无条件被优化器重写为高效的 **`Hash antijoin`** 或 **`Nested loop antijoin`**。
+1. **内表含 `NULL` 导致 `NOT IN` 结果集瞬间归零**：`x NOT IN (a, b, NULL)` 等价于 `x <> a AND x <> b AND x <> NULL`。根据 SQL 三值逻辑，`x <> NULL` 永远求值为 `UNKNOWN`，而 `TRUE AND UNKNOWN` 仍为 `UNKNOWN`，无法通过只认 `TRUE` 的 `WHERE` 过滤。因此子查询结果一旦混入哪怕 1 条 `NULL`，整条查询会静默返回 **`0` 行空集**；而 `NOT EXISTS` 只判断子查询是否返回行，不会受内表 `NULL` 干扰。
+2. **外表连接列也可空时，`NOT EXISTS` 与 `NOT IN` 并非机械等价**：假设外表含 `(3, NULL)` 而内表仅含 `10`（无 `NULL`），`NOT IN` 对 `(3, NULL)` 求值 `NULL <> 10` 为 `UNKNOWN` 会**过滤掉**该行；而 `WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.code = a.code)` 中 `b.code = NULL` 无法匹配任何行，反而会**保留** `id = 3`。因此改写前必须先确认业务对“未知空值”是放行还是剔除；若业务要求过滤外表 `NULL` 行，须显式加上 `a.code IS NOT NULL`。
+3. **MySQL 8.0.17+ 执行计划差距与反连接限制**：当字段定义为可空（`NULL`）时，即便当前表中无 `NULL` 值甚至子查询内写了 `IS NOT NULL`，优化器为维护三值语义仍拒绝把 `NOT IN` 转为反连接，被迫退化为逐行探测的 `dependent` 相关子查询。改写为简单等值相关的 `NOT EXISTS` 后可解锁高效的 **`Hash antijoin`** 或 **`Nested loop antijoin`**；但需注意**反连接重写同样受查询形状限制**——若相关 `NOT EXISTS` 子查询带有聚合与 `HAVING`、`LIMIT` 等结构，优化器仍可能无法转换为反连接而退化为 `dependent` 子查询，调优时应结合 `EXPLAIN FORMAT=TREE` 实际核验。
 
 </details>
 

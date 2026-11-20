@@ -28,13 +28,13 @@ description: 精通 EXPLAIN 十二列与 key_len 计算规则，运用 FORMAT=JS
 | `type` | 单表访问方法，从最优到最差依次为 `system → const → eq_ref → ref → fulltext → ref_or_null → index_merge → unique_subquery → index_subquery → range → index → ALL`，详见[第 5 章 5.1 节](./chapter-05#ch5-1) |
 | `possible_keys` | 优化器初筛可能用到的候选索引；候选过多会抬高范围分析耗时，全索引覆盖扫描时可能出现 `possible_keys = NULL` 而 `key` 非空 |
 | `key` | 经成本对比后最终选定的索引名称；未走索引的全表扫描显示 `NULL` |
-| `key_len` | 形成**扫描区间边界条件**的索引列最大字节数总和，核心用于精确反推联合索引实际生效了前几列 |
+| `key_len` | 本次选中索引所用键前缀的最大字节数总和；在 `const` / `eq_ref` / `ref` / `range` 等查找场景中用于反推参与扫描区间边界的联合索引前几列；注意全索引扫描（`type = index`）时也会输出整条索引的完整 `key_len` |
 | `ref` | 采用 `const`、`eq_ref`、`ref` 或 `ref_or_null` 等值匹配索引时，右值的来源类型：`const` 表示常量，`db.tbl.col` 表示前序驱动表列，`func` 表示比较值经过函数运算或隐式字符集、类型转换 |
 | `rows` | 优化器预估需扫描的记录数；单表全表扫描取自表统计信息，索引扫描取自 `index dive` 或索引基数估算，详见[第 6 章 6.2.1 节](./chapter-06#ch6-2-1) |
 | `filtered` | 经 `rows` 扫描后，预估剩余多少百分比记录能通过本表其余过滤条件，取值 `(0, 100.00]`；连接查询中驱动表**预估扇出**为 `rows × filtered ÷ 100`，直接决定被驱动表的循环访问次数 |
 | `Extra` | 执行器附加动作与优化器策略信号，如覆盖索引、ICP 下推、外部排序、内部临时表与半连接去重，详见 [7.1.2 节](#ch7-1-2) |
 
-在排查联合索引失效边界时，`key` 列只能说明选中了哪个联合索引，唯有 **`key_len`** 能揭示联合索引中究竟有前几列参与构建了 B+ 树扫描区间。单列 `key_len` 遵循严格的上限字节累加公式：
+解读 `key_len` 前，**务必先结合 `type`、查询谓词以及树形执行计划（`EXPLAIN FORMAT=TREE`）定位访问方式，切勿看到 `key_len` 有值就断定存在索引筛选区间**。例如无 `WHERE` 条件的全索引扫描（`type = index`，如对建有可空 `INT` 索引 `k_code` 的表执行 `SELECT code FROM aa FORCE INDEX(k_code) ORDER BY code`），引擎实质上遍历了整棵覆盖索引树、并未构造任何范围筛选边界，但 `EXPLAIN` 依然会输出整条索引的完整 `key_len`（本例为 `4 + 1 = 5`）。只有在 **`const`、`eq_ref`、`ref`、`range`** 等索引查找场景中，`key_len` 才适合用来反推联合索引中实际参与构建 B+ 树扫描区间边界的前几列。单列 `key_len` 遵循严格的上限字节累加公式：
 
 ```text
 单列 key_len = 列最大数据字节数 + 可空标志字节 + 变长长度头字节
@@ -46,7 +46,7 @@ description: 精通 EXPLAIN 十二列与 key_len 计算规则，运用 FORMAT=JS
 2. **可空标志字节**：列允许存储 `NULL` 时计 **`1`**，声明为 `NOT NULL` 时计 **`0`**。
 3. **变长长度头字节**：`VARCHAR` 等变长类型在 `key_len` 统计中**固定计 `2` 字节**，`CHAR`、`INT` 等定长类型计 **`0`**。注意此处是优化器用于区分索引前缀的固定上限标记，不同于[第 2 章 2.1.1 节](./chapter-02#ch2-1-1)物理行格式按真实字节数动态占用 `1` 或 `2` 字节的规则。
 
-需要特别警惕：**`key_len` 只统计用于划定索引扫描区间边界的列**；仅用于 `ORDER BY` 排序、覆盖索引投影或索引条件下推过滤的后续索引列，一律不计入 `key_len`。以下基于 MySQL 8.4.13 实测验证这一规律：
+在 `ref`、`range` 等索引查找场景下，**`key_len` 仅累加实际用于划定索引扫描区间边界的前缀列**——像仅用于 `ORDER BY` 排序或索引条件下推（ICP）过滤的后续索引列，不会把该查找计划的 `key_len` 撑大；但若访问类型已变为 `type = index` 的覆盖全索引扫描，则会直接显示整条索引的完整字节数。以下基于 MySQL 8.4.13 实测验证 `ref` / `range` 场景下的前缀拆解规律：
 
 ```sql
 CREATE TABLE shop_exp (
@@ -229,7 +229,7 @@ SET SESSION optimizer_trace = 'enabled=off';
 
 ## 练习 {#ch7-exercises}
 
-以下 2 道练习围绕联合索引 `EXPLAIN` 综合反推调优及 `EXPLAIN ANALYZE` 百倍行数偏差排障展开。测试库默认采用 `utf8mb4` 字符集与 `InnoDB` 引擎，建议先独立推演结论再展开核对。
+以下 2 道练习围绕联合索引 `EXPLAIN` 综合反推调优，以及基于 `sys.statement_analysis` 筛选头号待调优 SQL 并用 `EXPLAIN ANALYZE` 排查百倍行数偏差展开。测试库默认采用 `utf8mb4` 字符集与 `InnoDB` 引擎，建议先独立推演结论再展开核对。
 
 ### 练习 1：根据 `EXPLAIN` 输出矩阵反推联合索引生效列与回表、排序优化方案
 
@@ -281,9 +281,17 @@ ALTER TABLE ticket_log ADD KEY idx_tc_desc (tenant_code, created_ts DESC);
 
 </details>
 
-### 练习 2：利用 `EXPLAIN ANALYZE` 定位预估行数与实际行数百倍偏差并修复
+### 练习 2：从 `sys.statement_analysis` 筛选头号待调优 SQL，并用 `EXPLAIN ANALYZE` 定位偏差与修复
 
-事件流水表 `event_log` 共有 `1000` 行记录，其中仅 `10` 行发生在 `2026-11-17`。开发编写按日查询 SQL 后，通过 `EXPLAIN ANALYZE` 采样得到如下实测输出：
+某业务库高峰期 CPU 使用率持续偏高，DBA 先从 `sys.statement_analysis`（Performance Schema 语句摘要视图）导出脱敏后的 Top SQL 统计片段如下：
+
+| `query`（脱敏语句摘要） | `exec_count` | `total_latency` | `avg_latency` |
+| --- | --- | --- | --- |
+| ``SELECT `id` , `payload` FROM `event_log` WHERE DATE ( `event_time` ) = ?`` | `184200` | `1.42 m`（约 `85.2 s`） | `462.54 us` |
+| ``SELECT `id` , `memo` FROM `audit_archive` WHERE `batch_no` = ? ORDER BY `id` DESC LIMIT ?`` | `6` | `14.80 s` | `2.47 s` |
+| ``SELECT `status` FROM `shop_config` WHERE `shop_code` = ?`` | `950000` | `3.15 s` | `3.32 us` |
+
+随后，工程师为优先治理目标准备了与线上结构一致的可控只读样例表 `event_log`（共 `1000` 行，其中仅 `10` 行发生在 `2026-11-17`），执行 `EXPLAIN ANALYZE` 采样得到如下实测输出：
 
 ```sql
 CREATE TABLE event_log (
@@ -302,13 +310,21 @@ SELECT id, payload FROM event_log WHERE DATE(event_time) = '2026-11-17';
 --     -> Table scan on event_log  (cost=101 rows=1000) (actual time=0.0409..0.318 rows=1000 loops=1)
 ```
 
-请指出 `Filter` 算子出现“预估 `rows=1000`、实际 `rows=10`”百倍偏差的根因，说明该偏差在多表连接中会引发什么连锁危害，并给出改写后的等价最优 SQL 及预期执行计划。
+请完成以下三步诊断与治理：
+
+1. 面对上述 `sys.statement_analysis` 摘要，若目标是优先压降实例整体负载，应最先调优哪一条 SQL？说明为何不应优先选择单次最慢（`avg_latency = 2.47 s`）或调用次数最多（`exec_count = 950000`）的语句。
+2. 结合可控只读样例的 `EXPLAIN ANALYZE` 估算与实测数据，指出 `Filter` 算子出现“预估 `rows=1000`、实际 `rows=10`”百倍偏差的根因，并说明该偏差在多表连接中会引发什么连锁危害。
+3. 给出改写后的等价最优 SQL，并说明改写后的执行计划及估算/实测指标变化。
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **百倍偏差根因**：`WHERE DATE(event_time) = '2026-11-17'` 对索引列包裹了函数 `DATE(...)`，导致 B+ 树无法建立基于原始 `DATETIME` 值的有序扫描区间而退化为 `Table scan`；同时优化器无法对函数表达式使用索引统计信息或 `index dive` 估算选择率，只能保守假定 `filtered = 100%`，将整表 `1000` 行原样作为 `Filter` 预估输出行数，与真实匹配的 `10` 行产生 100 倍偏差。
-2. **多表连接连锁危害**：若 `event_log` 参与多表连接，虚高 100 倍的预估扇出 `rows=1000` 会严重误导优化器的连接总成本公式，导致本应作为小结果集驱动表的 `event_log` 被错误排为被驱动表，甚至错误放弃嵌套循环索引查找而改走高开销的全表扫描。
+1. **优先调优第 1 条 `event_log` 按日查询 SQL**：
+   - **排序准绳是累计总耗时（`total_latency`）而非单次最慢**：优化实例整体 CPU 与并发吞吐时，应优先治理“执行次数 × 单次耗时”乘积最大的头号资源消耗源。第 1 条 SQL 虽单次仅 `462.54 us`，但高频执行 `184200` 次后累计消耗高达 **`1.42 m`（约 `85.2 s`）**，占三者总耗时的 `82%` 以上，收益最大。
+   - **为何不先调第 2 条与第 3 条**：第 2 条虽然单次最慢（`avg_latency = 2.47 s`），但在统计窗口内仅触发 `6` 次，累计总耗时仅 `14.80 s`（若业务明确反馈该后台接口超时才需单独专项处理，而非降全局 CPU 的首选）；第 3 条虽然 `exec_count` 高达 `950000`，但单次仅 `3.32 us`、累计仅 `3.15 s`，已接近内存索引点查极限，继续调优的边际收益微乎其微。同时，选出目标 digest 后，应使用可控只读样例（或隔离从库/测试环境）跑 `EXPLAIN ANALYZE`，避免在主库高峰期放大额外扫描负载。
+2. **百倍偏差根因与多表连接连锁危害**：
+   - **偏差根因**：`WHERE DATE(event_time) = '2026-11-17'` 对索引列包裹了函数 `DATE(...)`，导致 B+ 树无法建立基于原始 `DATETIME` 值的有序扫描区间而退化为 `Table scan`（实测扫描整表 `1000` 行耗时 `0.318 ms`）；同时优化器无法对函数表达式使用索引统计信息或 `index dive` 估算选择率，只能保守假定 `filtered = 100%`，将整表 `1000` 行原样作为 `Filter` 预估输出行数，与真实匹配的 `10` 行产生 100 倍偏差。
+   - **多表连接连锁危害**：若 `event_log` 参与多表连接，虚高 100 倍的预估扇出 `rows=1000` 会严重误导优化器的连接总成本公式，导致本应作为小结果集驱动表的 `event_log` 被错误排为被驱动表，甚至错误放弃嵌套循环索引查找而改走高开销的全表扫描。
 3. **等价改写与实测验证**：保持比较符左侧为裸列，改写为左闭右开的连续时间范围查询；若业务无法改写 SQL，也可在 MySQL 8.0.13+ 创建函数索引 `KEY idx_ev_date ((CAST(event_time AS DATE)))`：
 
 ```sql
@@ -318,7 +334,7 @@ WHERE event_time >= '2026-11-17 00:00:00'
   AND event_time <  '2026-11-18 00:00:00';
 ```
 
-MySQL 8.4.13 实测 `EXPLAIN ANALYZE` 输出如下，预估 `rows=10` 与真实 `rows=10` 完全吻合，总成本从 `101` 骤降至 `4.76`：
+MySQL 8.4.13 实测 `EXPLAIN ANALYZE` 输出如下，访问方式由 `Table scan` 升级为 `Index range scan`，预估 `rows=10` 与真实 `rows=10` 完全吻合，总成本从 `101` 骤降至 `4.76`，单次实测耗时从 `0.45 ms` 降至 `0.0524 ms`（降幅近 `90%`），映射至 `18.4` 万次调用可大幅释放整体 CPU 压力：
 
 ```text
 -> Index range scan on event_log using idx_event_time over ('2026-11-17 00:00:00' <= event_time < '2026-11-18 00:00:00'), with index condition: ((event_log.event_time >= TIMESTAMP'2026-11-17 00:00:00') and (event_log.event_time < TIMESTAMP'2026-11-18 00:00:00'))  (cost=4.76 rows=10) (actual time=0.0493..0.0524 rows=10 loops=1)
@@ -346,17 +362,18 @@ MySQL 8.4.13 实测 `EXPLAIN ANALYZE` 输出如下，预估 `rows=10` 与真实 
 
 </details>
 
-### 面试题 2：在默认 `utf8mb4` 字符集下，表建有联合索引 `idx_abc (a, b, c)`，其中 `a VARCHAR(100) DEFAULT NULL`、`b INT DEFAULT NULL`、`c INT NOT NULL`。若 `EXPLAIN` 显示 `key = idx_abc` 且 `key_len = 408`，说明哪几列构成了扫描区间？若改写为 `WHERE a = 'x' ORDER BY b`，`key_len` 会变成多少？
+### 面试题 2：在默认 `utf8mb4` 字符集下，表建有联合索引 `idx_abc (a, b, c)`，其中 `a VARCHAR(100) DEFAULT NULL`、`b INT DEFAULT NULL`、`c INT NOT NULL`。若 `EXPLAIN` 显示 `type = ref`、`key = idx_abc` 且 `key_len = 408`，说明哪几列构成了扫描区间？若改写为 `WHERE a = 'x' ORDER BY b`（仍为 `type = ref`），`key_len` 会变成多少？如果是无 `WHERE` 的全索引扫描（`type = index`），`key_len` 又会如何表现？
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **`key_len = 408` 说明前两列 `(a, b)` 构成了扫描区间，第 3 列 `c` 未参与扫描边界**：
+1. **`type = ref` 且 `key_len = 408` 说明前两列 `(a, b)` 构成了扫描区间，第 3 列 `c` 未参与扫描边界**：
    - 列 `a`：`100 × 4(utf8mb4) + 1(可空) + 2(VARCHAR 变长头) = 403` 字节；
    - 列 `b`：`4(INT) + 1(可空) + 0(定长) = 5` 字节；
    - 列 `c`：`4(INT) + 0(NOT NULL) + 0 = 4` 字节。
    - 前两列之和 `403 + 5 = 408` 恰好吻合；若 `b` 为 `NOT NULL` 则前两列应为 `407`，若用满三列则应为 `412`。
-2. **改写为 `WHERE a = 'x' ORDER BY b` 后，`key_len` 会变为 `403`**：尽管列 `b` 紧接在等值匹配的列 `a` 之后，能够利用索引天然有序性消除 `Using filesort`，但 `key_len` **仅累加用于限定索引查找与范围扫描边界的条件列**，纯粹用于 `ORDER BY` 排序的列不计入 `key_len`。
+2. **改写为 `WHERE a = 'x' ORDER BY b` 后，`key_len` 会变为 `403`**：在 `ref` / `range` 等索引查找场景中，尽管列 `b` 紧接在等值匹配的列 `a` 之后，能够利用索引天然有序性消除 `Using filesort`，但 `key_len` 仅累加用于限定扫描边界的前缀列 `a`，纯粹用于 `ORDER BY` 排序的列 `b` 不计入该次查找的 `key_len`。
+3. **无 `WHERE` 的覆盖全索引扫描（`type = index`）仍会显示整条索引的完整 `key_len = 412`**：因此解读 `key_len` 必须先看 `type` 与查询谓词，`key_len` 有值并不等价于存在索引筛选区间。
 
 </details>
 
@@ -382,3 +399,4 @@ MySQL 8.4.13 实测 `EXPLAIN ANALYZE` 输出如下，预估 `rows=10` 与真实 
 - [MySQL 8.4 Reference Manual: 28.3.26 The INFORMATION_SCHEMA OPTIMIZER_TRACE Table](https://dev.mysql.com/doc/refman/8.4/en/information-schema-optimizer-trace-table.html)
 - [MySQL 8.4 Reference Manual: 10.2.1.16 GROUP BY Optimization](https://dev.mysql.com/doc/refman/8.4/en/group-by-optimization.html)
 - [MySQL 8.4 Reference Manual: 10.4.4 Internal Temporary Table Use in MySQL](https://dev.mysql.com/doc/refman/8.4/en/internal-temporary-tables.html)
+- [MySQL 8.4 Reference Manual: 30.4.3.32 The sys.statement_analysis View](https://dev.mysql.com/doc/refman/8.4/en/sys-statement-analysis.html)

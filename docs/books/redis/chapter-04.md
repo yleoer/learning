@@ -23,7 +23,7 @@ description: 系统梳理单线程五大阻塞点与 Lazy Free、CPU/NUMA 亲和
 | **② Bigkey 内存释放** | `DEL` 删除含 100 万元素的 Hash/Set（分配器回收海量链表节点耗时达 **`1～2s`**） | 否（仅需解绑键名） | 显式用 **`UNLINK`**，或开启 **`lazyfree`** 交由 BIO 线程后台异步释放 |
 | **③ 清空数据库** | `FLUSHDB` / `FLUSHALL` 同步释放全库数千万键值 | 否 | 执行 **`FLUSHDB ASYNC`** / **`FLUSHALL ASYNC`**，或开启 `lazyfree-lazy-user-flush yes` |
 | **④ AOF 同步刷盘** | `appendfsync always` 或磁盘打满阻塞 `fsync` | 否（`everysec` 下） | 交由 BIO `fsync` 专用线程异步刷盘；重写 IO 冲突时评估 `no-appendfsync-on-rewrite` |
-| **⑤ 从库加载 RDB** | 主从全量同步时从库先清空旧库再同步解析数 GB RDB（及 Cluster 同步 `MIGRATE` 大键） | **是**（加载完才可查） | 控制单实例内存 **`2～6 GiB`**；开启 `replica-lazy-flush yes` 异步清空旧库 |
+| **⑤ 从库加载 RDB** | 主从全量同步时从库先清空旧库再同步解析数 GB RDB（及 Cluster 同步 `MIGRATE` 大键） | **是**（加载完才可查） | 按可容忍的 RDB 加载与 `fork` 时长控制单实例规模（常见线上经验参考 `2～6 GiB`）；开启 `replica-lazy-flush yes` 异步清空旧库 |
 
 > [!NOTE]
 > **BIO 队列机制修正与 `lazyfree` 默认值核验**：Redis 启动时创建 `BIO_CLOSE_FILE`、`BIO_AOF_FSYNC` 与 `BIO_LAZY_FREE` 三类后台线程——注意源码 `src/bio.c` 为每类任务维护**各自独立的任务链表与互斥锁/条件变量**（而非原书配图所画的共用单一队列再分支判断）。此外，在 **Redis 8.10.3** 中，`lazyfree-lazy-eviction`、`lazyfree-lazy-expire`、`lazyfree-lazy-server-del`、`replica-lazy-flush`、`lazyfree-lazy-user-del` 与 `lazyfree-lazy-user-flush` **共 6 项配置默认值全部为 `no`**（防止极端写入压力下后台释放赶不上前台写入冲破内存上限）；生产存在集合大键时，强烈建议显式将前 4 项及 `lazyfree-lazy-user-del` 设为 **`yes`**。
@@ -115,7 +115,7 @@ echo never > /sys/kernel/mm/transparent_hugepage/defrag
 | **`--memkeys`**（6.0+） | `SCAN` + **`MEMORY USAGE`** 抽样核算真实物理字节占用 | **精准捕获真实内存大户**，完美弥补 `--bigkeys` 对少元素胖集合的漏检 |
 | `--hotkeys` | `SCAN` + `OBJECT FREQ` 读取键的对数访问频次 | **强前置条件**：实例 `maxmemory-policy` **必须配置为 `allkeys-lfu` 或 `volatile-lfu`**，否则报错退出 |
 
-结合大规模生产经验，日常研发须坚守 **五条底线规范**：① 键名按 `业务:实体:id` 分段且避免超长键名，不用 `SELECT` 多数据库混跑多业务；② **String 单值不超过 `10 KiB`，集合元素数不超过 `5000～10000` 个**（超出即做分桶拆分）；③ 单实例总内存控制在 **`2～6 GiB`**；④ 启用 `maxmemory + *-lru / *-lfu` 时，顶层 `0～9999` 整数共享对象池会自动失效（因每个键需独占 `lru` 字段记录访问信息），无需刻意凑小整数省对象头；⑤ **线上严禁执行 `KEYS`、不带 `ASYNC` 的 `FLUSHALL`/`FLUSHDB` 以及长时间开启 `MONITOR`**。
+结合大规模生产经验，日常研发须坚守 **五条底线规范**：① 键名按 `业务:实体:id` 分段且避免超长键名，不用 `SELECT` 多数据库混跑多业务；② **String 单值不超过 `10 KiB`，集合元素数不超过 `5000～10000` 个**（超出即做分桶拆分）；③ **单实例容量基于实测指标综合定容，不套用绝对硬阈值**：应结合峰值 `fork` 停顿（`latest_fork_usec`）、RDB 全量加载与重启恢复时长以及宿主机 COW 内存余量确定单实例上限（`2～6 GiB` 可作为常见线上经验参考区间而非普适铁律，低写比例、高配物理机或无持久化纯缓存场景可按压测结果适当放宽）；④ 启用 `maxmemory + *-lru / *-lfu` 时，顶层 `0～9999` 整数共享对象池会自动失效（因每个键需独占 `lru` 字段记录访问信息），无需刻意凑小整数省对象头；⑤ **线上严禁执行 `KEYS`、不带 `ASYNC` 的 `FLUSHALL`/`FLUSHDB` 以及长时间开启 `MONITOR`**。
 
 ## 练习 {#ch4-exercises}
 

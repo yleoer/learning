@@ -17,7 +17,7 @@ description: 基于 Redis 8 实测重组的架构原理、数据结构、持久�
 | **二、高性能调优、内存治理与高可用集群** | [第 4 章 阻塞治理、内存碎片、缓冲区与延迟诊断全景](./chapter-04) | 五大阻塞点、BIO 与 `lazyfree`、NUMA 绑核、`jemalloc` 碎片清理、输入/输出/复制缓冲区、Swap/THP 治理与诊断三剑客 | 第 16～22 讲，加餐五、六 |
 | | [第 5 章 主从复制、哨兵高可用与脑裂防护](./chapter-05) | `PSYNC` 全量与增量复制、共享复制缓冲区、Sentinel 自动发现与 Leader 选举、三轮选主打分、过期键同步真相与脑裂治理 | 第 6～8、10、32～34 讲 |
 | | [第 6 章 切片集群（Redis Cluster）、数据倾斜与大容量演进](./chapter-06) | `16384` 哈希槽、`MOVED`/`ASK` 重定向、Gossip 带宽核算与 `SPUBLISH`、Bigkey/Hotkey 倾斜治理及 Apache Kvrocks 冷热分层 | 第 9、28、35、37、38、40、41 讲，加餐七 |
-| **三、缓存架构、并发控制与场景实战** | [第 7 章 缓存读写模式、淘汰算法（LRU / LFU）与异常治理](./chapter-07) | Cache-Aside 双写一致性、`CLIENT TRACKING` 客户端缓存、8 种淘汰策略、LFU 24-bit 对数衰减、雪崩/击穿/穿透与布隆过滤器 | 第 23～27、34、39 讲 |
+| **三、缓存架构、并发控制与场景实战** | [第 7 章 缓存读写模式、淘汰算法（LRU / LFU）与异常治理](./chapter-07) | Cache-Aside 双写一致性、`CLIENT TRACKING` 客户端缓存、10 种淘汰策略（含 Redis 8.6+ LRM）、LFU 24-bit 对数衰减、雪崩/击穿/穿透与布隆过滤器 | 第 23～27、34、39 讲 |
 | | [第 8 章 原子操作、分布式锁、事务 ACID 与高并发秒杀实战](./chapter-08) | Lua 限流与 Redis Functions、分布式锁与看门狗、Redlock 与 Fencing Token 边界、`MULTI`/`EXEC` ACID 检验与秒杀分片扣减 | 第 29～31、34、36、41 讲 |
 
 ## 生产高频问题速查索引

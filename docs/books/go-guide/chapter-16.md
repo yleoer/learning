@@ -142,7 +142,7 @@ mux := http.NewServeMux()
 mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"id":%q}`+"\n", id)
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
 })
 
 srv := &http.Server{
@@ -155,6 +155,8 @@ srv := &http.Server{
 }
 ```
 
+输出 JSON 响应时必须使用 `"encoding/json"` 的 `Encode` 或 `Marshal`，**严禁用 `fmt.Fprintf(w, "{\"id\":%q}", id)` 手动拼接**。`%q` 输出的是 Go 字符串字面量转义而非 JSON 规范转义——例如含控制字符 `U+0007`（`\x07`）的字符串会被编成 Go 专有的 `\a`（合法 JSON 须写作 `\u0007`），生成的文本不是合法 JSON（`json.Valid` 返回 `false`），会直接破坏下游解析。
+
 `http.Server` 四项核心超时字段防护职责对照如下：
 
 | 字段名 | 计时覆盖范围与防护目标 |
@@ -163,6 +165,8 @@ srv := &http.Server{
 | `ReadTimeout` | 从连接被接受到读完完整请求头与请求体的总时间上限 |
 | `WriteTimeout` | 从读完请求头到写完响应体的总时间上限；流式长响应可按请求单独放宽 |
 | `IdleTimeout` | Keep-Alive 长连接在两笔请求之间空闲等待的最大保持时长 |
+
+除四项超时外，生产服务端通常还需补齐两道防护边界：一是读取请求体前用 `http.MaxBytesReader(w, r.Body, limit)` 限制单次负载大小，解码超限时通过 `*http.MaxBytesError`（Go 1.19+）返回 `413 Request Entity Too Large`；二是在进程准备下线时，用带独立超时的上下文调用 `srv.Shutdown(shutdownCtx)` 停止接收新连接并等待在途请求完成，同时在 `ListenAndServe` 返回时识别并忽略正常的 `http.ErrServerClosed`。
 
 编写处理函数时必须遵守 **`http.ResponseWriter` 的写入顺序铁律**：所有 `w.Header().Set(...)` 操作必须在调用 `w.WriteHeader(code)` 或首次调用 `w.Write(...)` **之前**完成。若此前未调 `WriteHeader`，首次调用 `Write` 会自动先发出 `200 OK` 与当前头部，此后修改 `Header()` 或补调 `WriteHeader` 均不生效。
 
@@ -189,16 +193,27 @@ slog.InfoContext(ctx, "order created", "order_id", orderID, "items", count)
 
 ## 练习 {#ch16-exercises}
 
-以下 2 道练习分别覆盖带超时与 `slog` 中间件的 HTTP 服务构建，以及自定义日期格式的 JSON 编解码实现。代码片段默认位于 `package main`，按需导入 `"encoding/json"`、`"fmt"`、`"log/slog"`、`"net/http"` 与 `"time"`。建议先独立编写，再展开核对参考答案。
+以下 2 道练习分别覆盖带超时保护、请求体上限与优雅停机的 HTTP 服务构建，以及自定义日期格式的 JSON 编解码实现。代码片段默认位于 `package main`，按需导入 `"context"`、`"encoding/json"`、`"errors"`、`"fmt"`、`"log/slog"`、`"net/http"` 与 `"time"`。建议先独立编写，再展开核对参考答案。
 
-### 练习 1：搭建带超时保护、Go 1.22 路由与 slog 日志中间件的 HTTP 服务
+### 练习 1：搭建带超时、请求体上限与优雅停机的 HTTP 服务
 
-实现中间件 `RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler` 记录每个请求的 HTTP 方法、路径与耗时；再使用 `http.NewServeMux` 注册 `GET /users/{id}` 路由返回 JSON `{"user_id": "..."}`，最后组装并返回配置齐全四项超时字段的 `*http.Server`。
+实现一个可安全下线的最小 HTTP 服务：
+
+1. 实现中间件 `RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler`，记录每个请求的 HTTP 方法、路径与耗时；
+2. 使用 `http.NewServeMux` 注册两条路由：
+   - `GET /users/{id}`：返回 JSON `{"user_id": "..."}`；
+   - `POST /users`：用 `http.MaxBytesReader` 将请求体上限限制为 `1 << 20`（1 MiB），通过 `json.NewDecoder` 解析 `{"name": "..."}`；若超限则识别 `*http.MaxBytesError` 并返回 `413 Request Entity Too Large`，其他解码失败返回 `400 Bad Request`，合法请求原样编码 JSON 返回 `201 Created`；
+3. 组装配齐四项超时字段的 `*http.Server`，并编写 `runServer(ctx context.Context, srv *http.Server, shutdownTimeout time.Duration) error`：后台调用 `srv.ListenAndServe()` 并忽略正常的 `http.ErrServerClosed`；当 `ctx` 取消时，以独立的 `shutdownTimeout` 期限调用 `srv.Shutdown(shutdownCtx)` 停止接收新连接并等待在途请求完成；
+4. 说明如何验证大请求体拦截、在途请求优雅排空，以及含控制字符（如 `"\x07"`）的合法 JSON 往返编解码。
 
 <details>
 <summary>查看参考答案</summary>
 
 ```go
+type createUserReq struct {
+	Name string `json:"name"`
+}
+
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +237,24 @@ func newServer(addr string, logger *slog.Logger) *http.Server {
 			logger.ErrorContext(r.Context(), "encode failed", "err", err)
 		}
 	})
+	mux.HandleFunc("POST /users", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 限制请求体最大 1 MiB
+		var req createUserReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(req); err != nil {
+			logger.ErrorContext(r.Context(), "encode failed", "err", err)
+		}
+	})
 
 	return &http.Server{
 		Addr:              addr,
@@ -232,9 +265,36 @@ func newServer(addr string, logger *slog.Logger) *http.Server {
 		Handler:           RequestLogger(logger)(mux),
 	}
 }
+
+func runServer(ctx context.Context, srv *http.Server, shutdownTimeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	return <-errCh
+}
 ```
 
-将 `*slog.Logger` 显式注入中间件便于在测试中替换为内存缓冲区断言；`w.Header().Set` 严格置于 `Encode` 首次写入之前；`"GET /users/{id}"`（Go 1.22+）会自动拒绝非 `GET` 方法请求并返回 `405 Method Not Allowed`。
+关键要点与验证提示：
+
+1. **请求体上限与状态码**：`http.MaxBytesReader` 包装 `r.Body` 后，一旦 `json.NewDecoder` 读取超过 1 MiB 会立刻中止并返回 `*http.MaxBytesError`（Go 1.19+），通过 `errors.As` 精确区分超限（`413 Request Entity Too Large`）与语法错误（`400 Bad Request`）；响应头 `w.Header().Set` 仍须严格置于 `WriteHeader` 与 `Encode` 之前。
+2. **优雅停机与独立期限**：触发停机时父级 `ctx`（例如 `signal.NotifyContext` 返回的信号上下文）已被取消，因此须基于 `context.WithoutCancel(ctx)`（Go 1.21+）或 `context.Background()` 派生带独立 `shutdownTimeout` 的 `shutdownCtx` 传给 `srv.Shutdown`。`Shutdown` 会立即关闭监听停止接收新连接并等待在途请求完成；此时 `ListenAndServe` 返回 `http.ErrServerClosed` 属正常关闭，须用 `errors.Is` 识别忽略，其他监听错误（如端口占用）则经缓冲通道 `errCh` 原样返回。
+3. **测试与控制字符 JSON 往返验证**：测试中将 `*slog.Logger` 替换为 `slog.DiscardHandler`（Go 1.24+）或内存缓冲区即可断言。除校验超过 1 MiB 请求返回 `413`、取消 `ctx` 后 `runServer` 返回 `nil` 外，建议专门向 `POST /users` 发送含控制字符 `"\x07"` 的报文（先用 `json.Marshal(createUserReq{Name: "alice\x07"})` 生成含 `\u0007` 转义的合法负载），断言响应满足 `json.Valid(body) == true` 且反序列化后的 `Name` 与 `"alice\x07"` 完全一致——这能直接拦截误用 `fmt.Fprintf(..., %q)` 产出非法 `\a` 转义的回归缺陷。
 
 </details>
 

@@ -181,7 +181,7 @@ func processAndGather[T, R any](in <-chan T, processor func(T) R, workers int) [
 }
 ```
 
-`WaitGroup` 不收集 `error` 也不联动取消；需要“任一子任务报错即取消其余任务并返回首个错误”时，优先选用 `golang.org/x/sync/errgroup` 的 `errgroup.WithContext(ctx)`。
+`WaitGroup` 不收集 `error` 也不联动取消；需要“任一子任务报错即取消其余任务并收集首个错误”时，优先选用 `golang.org/x/sync/errgroup` 的 `errgroup.WithContext(ctx)`。注意其精确语义：`errgroup.WithContext` 在首个非空错误发生时立即取消派生 `ctx`，但 **`Wait()` 会等待所有已启动的 Goroutine 全部返回后，才返回该首个错误**（因此不响应 `ctx.Done()` 的慢调用仍会拖住整批请求）。
 
 ### 13.3.3 单次延迟初始化（sync.OnceValue） {#ch13-3-3}
 

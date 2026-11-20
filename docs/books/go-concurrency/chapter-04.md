@@ -154,29 +154,51 @@ func VerifyHeartbeatInBubble(t *testing.T) {
 
 ## 4.4 对冲复制请求（Replicated Requests）尾延迟治理 {#ch4-4}
 
-面对偶发 GC 停顿或局部网络毛刺，可向 `N` 个后端副本并发派发同一请求，采纳首个成功响应并通过 `context` 立即取消其余 `N - 1` 个在途副本；下例导入 `"context"`：
+面对偶发 GC 停顿或局部网络毛刺，可向 `N` 个后端副本并发派发同一请求，采纳首个成功响应并通过 `context` 立即取消其余 `N - 1` 个在途副本；下例导入 `"context"` 与 `"errors"`：
 
 ```go
 func ReplicatedQuery[T any](
-	parent context.Context, replicas int, fn func(context.Context, int) (T, error),
+	parent context.Context, replicas int, doWork func(context.Context, int) (T, error),
 ) (T, error) {
+	var zero T
+	if replicas <= 0 {
+		return zero, errors.New("replicated query: replicas must be positive")
+	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	type res struct{ val T; err error }
-	ch := make(chan res, replicas) // 缓冲等于副本数，慢副本退出写回绝不阻塞泄漏
-	for id := range replicas {
-		go func() { v, err := fn(ctx, id); ch <- res{v, err} }()
+
+	type result struct {
+		val T
+		err error
 	}
+	resultCh := make(chan result, replicas) // 仅防慢副本退出写回阻塞，不代表外层响应取消
+	for id := range replicas {
+		go func() {
+			v, err := doWork(ctx, id)
+			resultCh <- result{val: v, err: err}
+		}()
+	}
+
 	var lastErr error
 	for range replicas {
-		r := <-ch
-		if r.err == nil { return r.val, nil } // defer cancel() 立即通知其余副本止损退出
-		lastErr = r.err
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case r := <-resultCh:
+			if r.err == nil {
+				return r.val, nil // defer cancel() 立即发出取消通知，令其余副本止损
+			}
+			lastErr = r.err
+		}
 	}
-	var zero T
 	return zero, lastErr
 }
 ```
+
+实现与调用该模式时须明确两项边界与三个时间点：
+
+1. **参数与取消监听边界**：入口必须校验 `replicas <= 0`，否则循环不执行会直接返回 `(zero, nil)` 假装成功；容量为 `replicas` 的缓冲通道 `resultCh` 只能避免慢副本写回时永久阻塞，**绝不替代外层在等待阶段通过 `select` 同时监听 `<-resultCh` 与 `<-ctx.Done()`**。当结果与父取消**同时就绪**时，`select` 会伪随机择一：可能直接返回 `ctx.Err()`，也可能采用已就绪的成功结果；若业务要求“一旦取消则一律拒绝结果”，可在命中 `resultCh` 后再检查 `ctx.Err() != nil`。
+2. **区分“取消通知 → 调用返回 → 工作协程退出”三个时刻**：首个成功返回触发 `defer cancel()`（或父 `parent` 取消）只是**发出取消通知**；外层随后**立即调用返回**，但 Go 绝不会强制杀死后台 goroutine——工作函数 `doWork` 必须尊重 `ctx.Done()`（如透传 `ctx` 或定期检查）才能尽快自行退出，否则未配合取消的慢副本仍会在后台继续占用算力与连接。这种“调用先返回、慢副本后台异步收尾”的语义是为了保全低尾延迟；若调用方要求返回前确保全部副本协程均已退出，则需配合 `sync.WaitGroup` 在 `cancel()` 后等待，但代价是返回耗时将受限于最慢副本响应取消的速度。
 
 启用复制请求前必须满足两项架构前提：一是**操作只读或严格幂等**；二是**各副本具备相互独立的运行时故障域**。原书英文版明确指出 *“If your handlers are too uniform, the chances that any single one will be an outlier is smaller”*——意为**若各副本过于同质化，单个副本独自成为慢异常值的概率反而极低，慢时往往大家一起慢**；**原书中文版第 199 页将其误译为相反含义**，阅读时务必甄别。若多协程在同进程争抢同一把锁、同一块慢盘或同一个过载下游，复制请求只会白耗算力并加剧排队恶化。
 

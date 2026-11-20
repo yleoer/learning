@@ -160,7 +160,7 @@ FROM performance_schema.innodb_redo_log_files LIMIT 3;
 
 `trx_id` 遵循严格的**按需惰性分配**与 **`+256` 批量持久化**规则：
 
-- **写时方才分配真实 `trx_id`**：`READ ONLY` 事务——对临时表写入时仅分配非持久临时号——以及开启后仅执行普通 `SELECT` 的读写事务，均**不会分配真实持久 `trx_id`**。此时查询 `information_schema.INNODB_TRX` 看到的是由内存 `trx_t` 结构体指针与 `1 << 48` 按位或构造的超大虚拟只读标识；直至事务真正修改第一行普通表记录的瞬间，才从全局计数器领用真实递增的 `trx_id`。注意 `INNODB_TRX` 内置 `0.1s` 采样缓存，脚本连续观测需间隔 `DO SLEEP(0.2)`：
+- **普通非锁定只读事务可跳过分配真实 `trx_id`，写操作及部分锁定读需要分配真实 `trx_id`**：`READ ONLY` 事务——对临时表写入时仅分配非持久临时号——以及开启后仅执行**普通非锁定只读 `SELECT`** 的事务，可跳过分配真实持久 `trx_id`。此时查询 `information_schema.INNODB_TRX` 看到的是由内存 `trx_t` 结构体指针与 `1 << 48` 按位或构造的超大虚拟只读标识。需特别纠正“必须等到首行被改写才分配真实事务号”的常见误解：**MySQL 8.4 实测表明，除了真正修改普通表记录的写操作外，显式事务中执行 `SELECT ... FOR UPDATE` 等部分锁定读（即便 `trx_rows_modified = 0`、尚未执行任何 DML）同样会从全局计数器领用真实的递增 `trx_id`**。注意 `INNODB_TRX` 内置 `0.1s` 采样缓存，脚本连续观测需间隔 `DO SLEEP(0.2)`：
 
 ```sql
 START TRANSACTION;
@@ -168,13 +168,14 @@ SELECT * FROM acct_chk;
 DO SLEEP(0.2);
 SELECT trx_id, trx_rows_modified FROM information_schema.INNODB_TRX
 WHERE trx_mysql_thread_id = CONNECTION_ID();
--- 首次写操作前：trx_id = 405154356199424（虚拟只读指针编号）, trx_rows_modified = 0
+-- 仅执行普通非锁定只读查询：trx_id = 405154356199424（虚拟只读指针编号）, trx_rows_modified = 0
+-- 若此处改执行 SELECT * FROM acct_chk WHERE id = 1 FOR UPDATE，即便 trx_rows_modified = 0 也会提前分配真实 trx_id
 
 UPDATE acct_chk SET balance = 200 WHERE id = 1;
 DO SLEEP(0.2);
 SELECT trx_id, trx_rows_modified FROM information_schema.INNODB_TRX
 WHERE trx_mysql_thread_id = CONNECTION_ID();
--- 首次写操作后：trx_id = 2467（领用真实单调递增 trx_id）, trx_rows_modified = 1
+-- 写操作后：trx_id = 2467（领用真实单调递增 trx_id）, trx_rows_modified = 1
 ROLLBACK;
 ```
 

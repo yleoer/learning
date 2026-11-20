@@ -9,7 +9,7 @@ description: 系统打通 WebAuthn/Passkeys、RBAC、OAuth 2.0 安全最佳实�
 
 安全架构的第一性原则是“**严格遵循经密码学界公开检验的行业标准规范，绝不臆造私有加密与鉴权协议**”。在云原生微服务时代，安全防线同时横跨南北向外部用户接入与东西向内部服务互调两个切面。本章整合原书第 5 章与第 9 章并全面对齐 **2025～2026 最新国际安全标准**：首先梳理认证（Passkeys 无密码认证）、RBAC 纵横权限、**RFC 9700（OAuth 2.0 安全最佳实践）与 OAuth 2.1 草案**（禁止密码模式、建议避免隐式模式，公共客户端必须使用 PKCE、机密客户端推荐使用）、OIDC 及状态凭证（Cookie-Session vs JWT）的工程边界；随后订正原书口令哈希反模式与密码学概念混淆，深入 **Argon2id** 与 **TLS 1.3** 前向安全握手；最后落地基于 **BeyondProd、SPIFFE 工作负载身份与双向 mTLS** 的云原生零信任架构。
 
-> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Docker 29.10、Linux/AMD64。
+> 核对日期：2026 年 11 月 20 日；基于 RFC 9700、RFC 9846、OWASP、W3C WebAuthn 与 SPIFFE / Istio 官方规范核对（本地参考环境为 Go 1.27.4、Linux/AMD64，未在真实多节点 Istio 集群实测）。
 
 ## 6.1 认证、授权（OAuth 2.0 / OIDC）与状态凭证 {#ch6-1}
 
@@ -73,13 +73,11 @@ HTTPS 传输安全建立在三类密码学原语与 **PKI（公钥基础设施�
 
 - **混合加密分工**：**非对称密码**负责握手阶段的身份验签（`ECDSA` / `Ed25519` / `RSA-PSS`）与临时密钥协商（**`ECDHE` 如 `X25519`**）；协商出对称会话密钥后，后续业务载荷全部使用极快的 **AEAD 对称认证加密**（`AES-GCM` 或 `ChaCha20-Poly1305`，同时完成机密性与防篡改完整性校验）。
 - **X.509 证书信任链**：客户端用操作系统内置的可信**根 CA 公钥**逐级验签中间 CA 与服务端证书，确认“证书中的公钥确实属于当前访问域名且未篡改”。注意全球公信 TLS 证书最长有效期已启动阶梯式强制缩短（**2026 年起缩短至 200 天，并将进一步迈向 47 天**），生产必须依托 **ACME 协议 / `cert-manager`** 实现全自动续期与热加载。
-- **为什么 TLS 1.3（RFC 8446）彻底淘汰了原书演示的 TLS 1.2 静态 RSA 握手？**
-
-| 核心维度 | TLS 1.2 静态 RSA 密钥交换（历史淘汰） | **TLS 1.3 现代标准（RFC 8446）** |
-| --- | --- | --- |
-| **握手往返耗时** | **2-RTT**（先协商算法，第二轮才传 `PreMasterSecret`） | **1-RTT**（`ClientHello` 直接预带 `X25519` 临时公钥分片 `key_share`，首轮往返即算出主密钥！） |
-| **前向安全性（Forward Secrecy）** | **无**！攻击者今天录下加密流量，哪怕 5 年后偷到服务端静态 RSA 私钥，仍可**把过去 5 年所有历史抓包全部解密**！ | **100% 强制前向安全**！彻底删去静态 RSA 密钥交换，每次连接临时生成用完即毁的 `ECDHE` 密钥对，服务端长期私钥仅用于签名证真，绝不加密会话密钥（2026 主流网关还进一步叠加 `X25519MLKEM768` 抗量子混合协商） |
-| **握手隐私与 0-RTT 边界** | 服务端证书明文裸奔传输 | `ServerHello` 之后所有握手报文（含证书）全加密；支持 `0-RTT` 会话恢复，但 **`0-RTT Early Data` 存在重放攻击风险，严禁承载非幂等写请求**（服务端遇重放风险可拒回 `425 Too Early`） |
+- **TLS 1.3（现行标准 RFC 9846，2026 年 7 月正式取代 RFC 8446）的架构迁移与治理要点**：TLS 1.2 与 TLS 1.3 的底层握手消息交互及密钥派生流程详见 [《图解网络》7.2 节](../network/chapter-07#ch7-2)；在微服务网关与零信任安全治理视角下，必须把握四项不可妥协的工程红线：
+  1. **强制前向安全（Forward Secrecy）与 1-RTT 握手**：彻底淘汰原书演示的 TLS 1.2 静态 RSA 密钥交换（长期私钥一旦泄露即可解密过去数年全部抓包流量），强制采用临时 `ECDHE`（如 `X25519`）与 AEAD 认证加密，并将首轮握手压缩至 `1-RTT`；
+  2. **证书短周期全自动轮换**：全球公信 TLS 证书最长有效期已启动阶梯式缩短（**2026 年起缩短至 200 天，并将进一步迈向 47 天**），外部网关必须接入 **ACME 协议 / `cert-manager`**，内部东西向则交给网格 SDS 内存轮换短寿证书，彻底杜绝人工换证过期事故；
+  3. **`0-RTT Early Data` 防重放治理**：TLS 1.3 会话恢复的 `0-RTT` 早期数据存在网络重放风险，网关层**严禁对非幂等写接口开启无保护的 `0-RTT`**（必要时拒回 `425 Too Early` 要求完成完整握手后重试）；
+  4. **后量子混合加密平滑迁移**：2026 年主流边缘网关与 TLS 库已普遍支持 `X25519MLKEM768` 等后量子混合密钥协商，防范“先截获密文、待量子算力成熟再解密（Harvest Now, Decrypt Later）”的长期合规威胁。
 
 ## 6.3 云原生零信任安全架构（BeyondProd & SPIFFE） {#ch6-3}
 
@@ -155,8 +153,8 @@ HTTPS 传输安全建立在三类密码学原语与 **PKI（公钥基础设施�
 <details>
 <summary>查看参考答案</summary>
 
-1. **为什么更快（2-RTT -> 1-RTT）**：TLS 1.2 需要客户端和服务端先来回一轮商定加密套件，第二轮才交换密钥参数；TLS 1.3 大幅精简了算法列表，客户端在第一条 `ClientHello` 中就直接猜测并附带了 `X25519` 椭圆曲线临时公钥（`key_share`），服务端收到后当场即可算出共享会话密钥并在 `ServerHello` 后直接加密发回证书，握手耗时立减一半。
-2. **为什么更安全与前向安全性定义**：TLS 1.3 彻底砍掉了 CBC、RC4、SHA-1 以及**不具备前向安全性的静态 RSA 密钥交换**，强制全部连接使用临时椭圆曲线密钥交换（**ECDHE**）与 AEAD 认证加密。**前向安全性**意味着每次连接使用的临时公私钥对在会话结束瞬间即从内存彻底销毁——即便攻击者录下了今天全部密文流量，且一年后黑进服务器偷走了站点证书的长期私钥，也**绝对无法反推出当年的临时会话密钥来解密任何一条历史报文**。
+1. **为什么更快（2-RTT -> 1-RTT）**：TLS 1.3（现行标准 RFC 9846，取代 RFC 8446；完整握手交互见 [《图解网络》7.2 节](../network/chapter-07#ch7-2)）大幅精简了密码套件，客户端首包即预带临时密钥共享参数（如 `X25519`），服务端单轮往返即可推导会话密钥并加密下发证书，首建连耗时立减一半。
+2. **为什么更安全与前向安全性定义**：TLS 1.3 彻底移除了 CBC、RC4、SHA-1 以及**不具备前向安全性的静态 RSA 密钥交换**，强制全部连接使用临时密钥交换（**ECDHE**，并支持叠加后量子混合协商）与 AEAD 认证加密。**前向安全性**意味着每次连接使用的临时公私钥对在会话结束后即销毁——即便攻击者录下了今天全部密文流量，且事后窃取了站点证书的长期私钥，也**无法反推出历史会话密钥来解密任何一条过往报文**。
 
 </details>
 
@@ -186,7 +184,7 @@ HTTPS 传输安全建立在三类密码学原语与 **PKI（公钥基础设施�
 ## 参考资料
 
 - [RFC 9700：Best Current Practice for OAuth 2.0 Security（IETF BCP 240, Jan 2025）](https://www.rfc-editor.org/rfc/rfc9700)
-- [RFC 8446：The Transport Layer Security（TLS）Protocol Version 1.3](https://www.rfc-editor.org/rfc/rfc8446)
+- [RFC 9846：The Transport Layer Security（TLS）Protocol Version 1.3（Obsoletes RFC 8446, Jul 2026）](https://www.rfc-editor.org/rfc/rfc9846)
 - [OWASP Cheat Sheet Series：Password Storage Cheat Sheet（Argon2id & bcrypt）](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
 - [W3C Recommendation：Web Authentication（WebAuthn / Passkeys）API](https://www.w3.org/TR/webauthn-3/)
 - [CNCF SPIFFE Specification & Google BeyondProd Whitepaper](https://spiffe.io/docs/latest/spiffe-about/overview/)

@@ -26,7 +26,7 @@ MVCC 解决了普通查询“读写互不阻塞”的难题，但面对并发“
 | `... FOR SHARE / UPDATE NOWAIT` | 非阻塞快速失败 | MySQL 8.0+ 新增：若目标行已被冲突锁占用，**零等待立即报错** `ERROR 3572 (HY000)`，防止热点行阻塞拖垮连接池 |
 | `... FOR SHARE / UPDATE SKIP LOCKED` | 跳过已锁记录 | MySQL 8.0+ 新增：**自动跳过已被冲突锁占用的记录**，仅锁定并返回当前可立即获锁的记录，常用于数据库抢单与任务队列分发 |
 
-补充 `SERIALIZABLE` 隔离级别下的普通 `SELECT` 规则：当 `autocommit = 0`（显式事务内）时，InnoDB 会自动将普通 `SELECT` 转化为 `SELECT ... FOR SHARE` 加锁读；而当 `autocommit = 1` 时，InnoDB 识别出单语句只读事务无需串行化锁保护，直接降级为无锁 MVCC 快照读，即使目标行正被其他未提交事务持有 `X` 锁也不会阻塞。
+补充 `SERIALIZABLE` 隔离级别下的普通 `SELECT` 加锁边界：切勿仅凭会话变量 `@@autocommit = 1` 就断定普通 `SELECT` 处于无锁只读状态。即便 `@@autocommit = 1`，只要显式执行了 `START TRANSACTION;`（或 `BEGIN;`）再发出普通 `SELECT`，在 `SERIALIZABLE` 下 InnoDB 依然会将其隐式转换为 `SELECT ... FOR SHARE`，加上表级 `IS` 锁与相应的记录 `S` 锁（从而会被其他未提交事务的冲突 `X` 锁阻塞）；与 `autocommit = 0` 下的多语句事务行为一致。**只有未处于显式事务中、真正作为独立自动提交语句执行的非锁定只读查询**，InnoDB 才能判定其无需串行化锁保护，适用免锁优化直接走无锁 MVCC 快照读。
 
 ### 10.1.2 表级意向锁矩阵与 Server 层 MDL 元数据锁 {#ch10-1-2}
 
@@ -209,7 +209,7 @@ INSERT INTO hero VALUES (6, 'z张飞', 'H06', '蜀')
 总结**五条生产防死锁工程铁律**：
 
 1. **固定加锁次序**：单个事务更新多张表或批量更新多行主键时，必须先在业务层对主键值做升序排序（`ORDER BY id ASC`），从拓扑上斩断反向加锁环路；
-2. **废除“先 `FOR UPDATE` 查空再 `INSERT`”反模式**：防重幂等写入一律依托唯一索引，改用单条 `INSERT ... ON DUPLICATE KEY UPDATE` 或业务层捕获 `ERROR 1062`；
+2. **废除“先 `FOR UPDATE` 查空再 `INSERT`”反模式**：防重幂等写入优先由唯一索引直接裁决，捕获目标唯一键的 `ERROR 1062` 后在新事务或当前读中回查核对原单，或结合副作用边界谨慎评估 `INSERT ... ON DUPLICATE KEY UPDATE`；
 3. **写条件必走高选择性索引**：杜绝无索引 `UPDATE` / `DELETE` 在 `RR` 下升级为全表 Next-Key 锁连同 `Supremum` 锁表；
 4. **极致压缩事务持锁窗口**：严禁在 `BEGIN ... COMMIT` 之间夹杂远程 HTTP/RPC 调用、消息投递或文件读写；
 5. **按需降级为 `READ COMMITTED`**：对不依赖数据库层防范围幻读的常规互联网 OLTP 服务，使用 `READ COMMITTED` 可消去绝大多数 `Gap` 锁与插入意向锁死锁，并激活 `UPDATE` 半一致性读与未命中行提前释锁。
@@ -268,7 +268,7 @@ INSERT INTO orders (order_no, amount) VALUES ('ORD_20261117_09', 9900);
 COMMIT;
 ```
 
-压测发现：当上游因网络超时对同一笔新订单并发重发两次回调，甚至对两笔相邻单号 `'ORD_20261117_08'` 与 `'ORD_20261117_09'`——两者在 `order_no` 索引上落入同一间隙——并发调用时，频繁爆出 `ERROR 1213` 死锁。请说明：(1) 为什么改成唯一索引 `order_no` 后“先 `FOR UPDATE` 查空再 `INSERT`”依然会死锁；(2) 如何重构该 SQL 流程以彻底根除间隙锁死锁？
+压测发现：当上游因网络超时对同一笔新订单并发重发两次回调，甚至对两笔相邻单号 `'ORD_20261117_08'` 与 `'ORD_20261117_09'`——两者在 `order_no` 索引上落入同一间隙——并发调用时，频繁爆出 `ERROR 1213` 死锁。请说明：(1) 为什么改成唯一索引 `order_no` 后“先 `FOR UPDATE` 查空再 `INSERT`”依然会死锁；(2) 如何重构该 SQL 流程以消除前置间隙锁死锁，并正确处理 `REPEATABLE READ` 下的幂等回查与常见替代写法的副作用？
 
 <details>
 <summary>查看参考答案</summary>
@@ -277,14 +277,19 @@ COMMIT;
    - 唯一索引退化为纯记录锁 `REC_NOT_GAP` 的前提是**等值查询精确命中已存在记录**；当新单号 `'ORD_20261117_09'` 在库中**尚不存在**时，即便 `order_no` 是 `UNIQUE` 索引，在 `REPEATABLE READ` 下依然必须对后继索引记录（或 `supremum`）加上排他间隙锁 **`X,GAP`** 以防止幻读！
    - 两个并发回调事务执行完首条 `SELECT ... FOR UPDATE` 后，由于 `X,GAP` 之间完全兼容，双方同时持有了同一开区间的 `X,GAP`；紧接着双方各自执行 `INSERT` 申请 `X,GAP,INSERT_INTENTION`，互相等待对方释放 `X,GAP`，必然触发死锁。
 
-2. **根治重构方案**：
-   - **删除前置 `SELECT ... FOR UPDATE` 探路语句**，直接依靠 `order_no` 上的 `UNIQUE` 约束执行单条原子幂等写入：
+2. **重构方案、幂等回查与副作用边界**：
+   - **核心重构——删除前置 `SELECT ... FOR UPDATE` 探路，先由唯一约束裁决**：直接向带 `UNIQUE KEY (order_no)` 的表执行普通 `INSERT`：
      ```sql
-     INSERT INTO orders (order_no, amount)
-     VALUES ('ORD_20261117_09', 9900)
-     ON DUPLICATE KEY UPDATE id = id; -- 或使用 INSERT IGNORE，或在应用层捕获 ERROR 1062 后改走普通快照读返回已有单据
+     INSERT INTO orders (order_no, amount) VALUES ('ORD_20261117_09', 9900);
      ```
-   - **原理解析**：删除未命中 `FOR UPDATE` 后，正常插入不同单号（如 `_08` 与 `_09`）仅在无锁情况下写入记录并借助**隐式锁**保护，互不加 `X,GAP`，并发吞吐提升数倍且零死锁；即便是同一单号 `_09` 极端并发双写，胜出事务先写入隐式锁，败方检测到唯一键冲突将胜方隐式锁物化为 `X,REC_NOT_GAP` 并单向排队等待胜方提交后执行幂等分支，不会形成双向持锁环路。同时在业务层对 `ERROR 1213` 保留最多 `2 ~ 3` 次指数退避重试作为防御性兜底。
+     删除未命中 `FOR UPDATE` 后，正常并发插入不同单号（如 `_08` 与 `_09`）仅借助**隐式锁**保护，不再提前持有 `X,GAP`，从而消除了“同间隙不同单号互锁”的经典死锁路径。
+   - **精确区分错误码并在新事务或当前读中回查核对**：
+     - **区分目标幂等键冲突与其他错误**：应用层必须明确识别错误码 **`ERROR 1062`（Duplicate entry）** 且确认冲突键为目标幂等键 `order_no`；其他数据库错误（如字段超长、外键/检查约束失败、连接中断等）须直接失败上抛，切勿一概当作幂等成功吞掉。
+     - **警惕 `REPEATABLE READ` 快照读陷阱**：若当前事务在触发 `1062` 前已建立了一致性 `ReadView`（例如事务前半段执行过普通 `SELECT` 或使用 `START TRANSACTION WITH CONSISTENT SNAPSHOT`），当并发事务抢先提交导致本事务 `INSERT` 报 `1062` 后，**在同一事务内紧接着执行普通快照读 `SELECT` 仍会受限于旧 `ReadView` 而返回 `0` 行**！因此回查原单必须在**新事务**（先结束或回滚当前事务再查）中执行，或在当前事务内使用**当前读**（如 `SELECT id, order_no, amount FROM orders WHERE order_no = 'ORD_20261117_09' FOR SHARE;`）读取最新已提交记录，并核对 `amount` 等关键业务参数——一致则返回原单结果完成幂等，不一致则显式抛出业务参数冲突异常。
+   - **切勿将 `INSERT IGNORE` 与 `ON DUPLICATE KEY UPDATE` 视为无副作用的等价替代**：
+     - **`INSERT IGNORE` 的静默降级风险**：它不仅忽略唯一键冲突，在严格 SQL 模式下还会把数值越界、非法日期、非空列缺失等本应报错的脏写入静默降级为警告并截断/替换落盘（例如向 `TINYINT` 列写入 `999` 会被静默截断为 `127` 且仅记 `Warning 1264`），在支付与账务场景极易引入静默数据损坏。
+     - **`INSERT ... ON DUPLICATE KEY UPDATE` 的自增与更新副作用**：即使命中重复键走更新分支（包括 `ON DUPLICATE KEY UPDATE id = id` 这类无操作更新），仍会提前消耗自增 ID 造成空洞、在冲突记录上加排他锁（在 `RR` 下多唯一键表并发冲突时亦可能出现锁竞争），且可能意外触发 `ON UPDATE` 时间戳变更或更新触发器，同时无法直接暴露“相同 `order_no` 但 `amount` 被篡改”的业务冲突。
+   - **保留并发异常兜底而非承诺“零死锁”**：删除前置 `FOR UPDATE` 消除了最主要的间隙锁死锁源，但高并发下多唯一键表或唯一键冲突加 `S` 锁后并发升级的场景仍不能保证绝对“零死锁”。应用层重试须严格遵循 [10.4.2 节](#ch10-4-2)对错误码的区分：遇到 **`ERROR 1213`（Deadlock）** 时 InnoDB 已自动回滚整个事务，可直接按幂等逻辑有限次退避重试；遇到 **`ERROR 1205`（Lock wait timeout）** 时，默认 `innodb_rollback_on_timeout = OFF` 下仅回滚超时单条语句，**必须先显式执行 `ROLLBACK` 清理当前事务**后再决定是否重试。
 
 </details>
 

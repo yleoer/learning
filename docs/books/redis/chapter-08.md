@@ -78,14 +78,20 @@ redis-cli FCALL deduct_sku 1 sku:1001 2
    ```bash
    SET lock:order:9001 "550e8400-e29b:tid-42" NX PX 30000
    ```
-2. **原子校验解锁原语**：释放锁时绝不能直接调 `DEL`——若客户端 A 因业务卡顿超过 `30s` 锁已自动过期并被客户端 B 抢走，此时 A 苏醒直接 `DEL` 就会**误删客户端 B 的锁**！必须用 Lua 脚本或 Function 原子完成“读取比对唯一标识 + 一致才删除”：
-   ```lua
-   if redis.call("GET", KEYS[1]) == ARGV[1] then
-       return redis.call("DEL", KEYS[1])
-   else
-       return 0
-   end
-   ```
+2. **原子校验解锁原语**：释放锁时绝不能直接调 `DEL`——若客户端 A 因业务卡顿超过 `30s` 锁已自动过期并被客户端 B 抢走，此时 A 苏醒直接 `DEL` 就会**误删客户端 B 的锁**！
+   - **Redis 8.4+ 原生比较并删除**：无需脚本，直接使用 **`DELEX key IFEQ <token>`** 单命令原子完成比对与删除：
+     ```bash
+     DELEX lock:order:9001 IFEQ "550e8400-e29b:tid-42"
+     ```
+   - **Redis 8.4 之前版本**：使用 Lua 脚本或 Function 原子完成“读取比对唯一标识 + 一致才删除”：
+     ```lua
+     if redis.call("GET", KEYS[1]) == ARGV[1] then
+         return redis.call("DEL", KEYS[1])
+     else
+         return 0
+     end
+     ```
+   - **安全边界提醒**：无论是 `DELEX ... IFEQ` 还是 Lua 比较并删除，都**仅防止误删他人新获取的锁**，并不能阻止“租约过期、他人已拿到新锁后，旧持锁者从卡顿中苏醒仍继续向外部数据库/存储发写请求”的问题（该类强正确性问题须由下一节的 Fencing Token 与后端存储版本号校验解决）。
 3. **Watchdog（看门狗）自动续期机制**：若业务正常执行偶尔超过 `30s` 怎么办？成熟客户端框架（如 Redisson）在加锁成功后会启动一个后台定时任务（每 `30 ÷ 3 = 10s` 触发一次）：只要当前进程持锁线程仍在执行临界区代码，就通过 Lua 脚本校验 `req_uuid` 一致后将锁 TTL 重置回 `30000ms`；一旦客户端进程宕机，看门狗随之消失，锁最多 `30s` 后必定自动释放。
 
 ### 8.2.2 Redlock 多数派算法与 Fencing Token 正确性边界 {#ch8-2-2}
@@ -99,7 +105,7 @@ redis-cli FCALL deduct_sku 1 sku:1001 2
 > 分布式系统学者 Martin Kleppmann（《数据密集型应用系统设计》作者）指出，Redlock 依然无法提供 100% 强一致互斥：① 若客户端 1 拿到 Redlock 后在写存储前发生长达数十秒的 **GC STW（Stop-The-World）全局停顿**或系统时钟跳变，期间锁已过期并由客户端 2 合法获取，客户端 1 从 GC 醒来后浑然不知仍把旧数据覆盖写入后端存储；② Redlock **无法生成全局单调递增的栅栏令牌**（Fencing Token）供后端存储校验拦截滞后写请求。
 >
 > **现代工程选型二分法**：
-> - **效率型锁（Efficiency Lock，占业务 95%）**：加锁目的是避免重复计算或防缓存击穿并发查库，极端秒级主从切换偶发重入不会造成资损——**直接使用单主从/Cluster 上的 `SET NX PX + Lua 解锁 + Watchdog` 即可**，无需承担维护 5 套独立实例的高昂成本去跑 Redlock。
+> - **效率型锁（Efficiency Lock，占业务 95%）**：加锁目的是避免重复计算或防缓存击穿并发查库，极端秒级主从切换偶发重入不会造成资损——**直接使用单主从/Cluster 上的 `SET NX PX` + `DELEX IFEQ`（8.4+）/ Lua 解锁 + Watchdog 即可**，无需承担维护 5 套独立实例的高昂成本去跑 Redlock。
 > - **正确性型锁（Correctness Lock，金融核心/强互斥状态机）**：一旦重入会引发资损或数据损坏——**不应依赖任何形态的 Redis 锁（含 Redlock）作为唯一屏障**！应选用基于 Raft/ZAB 强一致共识算法的 **etcd（Lease + Revision）或 ZooKeeper（临时顺序节点 + zxid）** 获取单调递增 Fencing Token，并在最终落库的数据库层面配合唯一约束或乐观锁版本号（`WHERE version = old_ver`）做终极兜底。
 
 ## 8.3 MULTI / EXEC 事务 ACID 检验与秒杀系统实战 {#ch8-3}
@@ -118,29 +124,36 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 > [!TIP]
 > **现代开发准则与脚本“无回滚”铁律**：由于 `MULTI`/`EXEC + WATCH` 既无运行期回滚，又无法读取前一步结果做分支判断，且高并发下 `WATCH` 乐观锁冲突会导致海量无效重试耗尽吞吐，**生产中凡涉及多步原子读写逻辑，一律优先使用 Redis Functions（`FCALL`）或 Lua 脚本替代 `MULTI`/`EXEC`**。
 >
-> 但务必牢记：**Lua 脚本与 Redis Functions 同样没有事务回滚机制**！脚本执行只保证**隔离性**（单线程串行执行，期间绝不会穿插其他客户端命令）；如果脚本运行到中途因错误中断（例如前面已执行了 `HINCRBY` 扣减库存，后面操作某个键时抛出 `WRONGTYPE` 或参数非法错误），**报错之前已经成功执行的写入命令绝不会被回滚**！因此，生产脚本必须在**开头先完成全部参数合法性、数值范围与目标键数据类型（如 `TYPE`）校验**，确认无误后再集中执行写操作（确需捕获可恢复错误时改用 `redis.pcall`）。
+> 但务必牢记：**Lua 脚本与 Redis Functions 同样没有事务回滚机制**！脚本执行只保证**隔离性**（单线程串行执行，期间绝不会穿插其他客户端命令）；如果脚本运行到中途因错误中断（例如前面已执行了 `HINCRBY` 扣减库存，后面操作某个键时抛出 `WRONGTYPE` 或整数转换错误），**报错之前已经成功执行的写入命令绝不会被回滚**（即使改用 `redis.pcall` 捕获错误，也同样不会撤销已执行的写入）！因此，生产脚本必须在**开头先完成全部参数合法性、字段整数格式、数值范围与目标键数据类型（如 `TYPE`）校验**，确认无误后再集中执行写操作。
 
-### 8.3.2 高并发秒杀流量漏斗、库存子键分片与原子扣减闭环 {#ch8-3-2}
+### 8.3.2 高并发秒杀流量漏斗、单槽闭环与跨片扩展边界 {#ch8-3-2}
 
-秒杀场景具有**瞬时十万级 QPS、99% 以上读查验与极少量有效下单**的极端特征，必须通过分层漏斗与分片原子扣减协同承载：
+秒杀场景具有**瞬时高并发、99% 以上读查验与极少量有效下单**的极端特征，主线架构应以**分层漏斗 + 单槽原子预扣 + 可靠订单/对账闭环**为基准，再按实测 QPS 决定是否引入跨片扩展：
 
 ```text
 [1. 秒杀前/接入层] 静态页推 CDN + 网关层黑名单/令牌桶限流（拦截 90%+ 无效刷单流量）
           │
           ▼
-[2. Redis 集群原子预扣层（物理独立实例池，库存键永不过期防击穿！）]
-    将单品 1000 件总库存拆分为 10 个分片子键：sku:99:seg_0 ～ sku:99:seg_9（每片 100 件）
-    客户端随机路由分片 ──► 调用 FCALL deduct_sku 一步原子完成“余量校验 + 扣减 avail + 增加 sold”
-          │  返回 0 则直接毫秒级响应“已售罄”，绝不触碰后端 MySQL！
-          ▼  返回成功扣减数 (> 0)
-[3. 异步落库与超时回补层] 发送可靠 MQ 异步创建 MySQL 订单；若超时未支付或落库最终失败，调回补函数归还库存
+[2. Redis 原子预扣层（物理独立实例池，库存键永不过期防击穿！）]
+    基准主线（单槽版）：库存键 seckill:{act_88}:stock 与订单占位键 seckill:{act_88}:orders 落入同槽
+    调用 FCALL try_seckill 一步原子完成“限购判重 + 合法性校验 + 扣减 avail + 增加 sold + 写 <order_id>:LOCKED 占位”
+          │  返回 0（全局售罄）或 -1（重复下单）直接毫秒级拦截，绝不触碰后端 MySQL！
+          ▼  返回 1（预扣成功且已在 Redis 留存订单占位记录）
+[3. 异步落库与防崩溃空窗闭环]
+    - 切忌“扣完 Redis 后仅在应用进程内存发 MQ”（进程刚扣完即崩溃会丢失 MQ 消息，导致库存被静默锁死！）
+    - 兜底闭环：下游按 order_id 幂等创建 MySQL 订单（若需下游多服务联动，关系库内采用本地事务写订单 + Outbox，见分布式架构第 3 章）；
+      同时配合“Redis 预留占位 + 定时超时扫描对账”任务，对超时未建单或未支付订单自动调幂等回补函数归还库存
 ```
 
-实施秒杀扣减务必守住三条红线（订正原书第 36 讲伪代码隐患）：
+实施秒杀扣减务必守住四条红线（订正原书第 36 讲伪代码隐患）：
 
-1. **严禁“先查库存再扣减”分离执行，也严禁用 `DECRBY` 扣成负数后不加回就抛弃**：若某商品余量仅剩 `1` 件，某用户请求购买 `2` 件，假若直接执行 `DECRBY stock 2` 得到 `-1` 判定失败却忘记立即 `INCRBY stock 2` 归还，最后那 `1` 件库存就会被永久吞掉造成**少卖**！使用 `8.1.2 节` 中的 `deduct_sku` 函数“先在 Lua 内判够减再执行 `HINCRBY -buy`”可同时 100% 杜绝**超卖**与**少卖**。
-2. **Cluster 下单品库存分片必须在键名上显式拆分子键**：若总库存为 `1000` 件、瞬时并发达 `20 万 QPS`，单个分片主节点仍可能吃紧。需在业务层将库存预拆为 `sku:99:seg_0` ～ `sku:99:seg_9` 十个不同键（切勿加 `{sku:99}` Hash Tag，否则又聚回同一槽！），使其散列到 10 台主节点并行承接扣减；若某子键率先售罄，客户端可顺延轮询下一个子键。
-3. **秒杀集群与日常核心业务集群物理隔离**：防止大促极端流量波及日常登录、购物车等基础链路。
+1. **严禁“先查库存再扣减”分离执行，也严禁用 `DECRBY` 扣成负数后不加回就抛弃**：若某商品余量仅剩 `1` 件，某用户请求购买 `2` 件，假若直接执行 `DECRBY stock 2` 得到 `-1` 判定失败却忘记立即 `INCRBY stock 2` 归还，最后那 `1` 件库存就会被永久吞掉造成**少卖**！在 Lua / Function 内前置校验合法整数范围与余量充足后再执行 `HINCRBY`，可同时杜绝**超卖**与**少卖**。
+2. **封堵“扣 Redis 后发 MQ”进程崩溃空窗**：在 Redis 预扣成功与发送 MQ 消息之间，应用进程一旦宕机就会形成“库存已扣但无 MQ 消息、无数据库订单”的空窗。生产上必须将扣减状态与待履约事件关联持久记录——例如在数据库侧通过**本地事务同库写订单与 Outbox 消息表**再由 CDC 投递（详见 [分布式架构第 3 章 3.2.1 节](../architecture/chapter-03#ch3-2-1)）；在 Redis 预扣链路中则必须把**订单占位（含 `order_id` 与状态）与扣减在同一原子函数内落盘**，下游消费者按 `order_id` 幂等落库，并辅以**超时扫描对账任务**定期核对超时未成单/未支付的预留占位并触发幂等回补。
+3. **有条件的高并发扩展——库存子键分片（仅当单分片主节点确已达写入瓶颈时启用）**：
+   - 仅当单个爆品写入压力超过单分片承载上限时，才将总库存预拆为 `sku:99:seg_0` ～ `sku:99:seg_9` 等多个子键（切勿加 `{sku:99}` Hash Tag，否则会重新聚回同一槽）。注意：**10 个不同键只是经 `CRC16 mod 16384` 映射到各自哈希槽，再按集群拓扑分布到各主节点，并不保证恰好落在 10 台不同主节点上**。
+   - **区分“局部不足”与“全局售罄”**：跨片扣减脚本遇到单个子键余量不足时，应返回专门的局部不足状态码（例如 **`-2`**），提示客户端顺延探查或按本地健康表路由至其他仍有余量的分片，**绝不能看到某一片不足就直接向用户宣告全局售罄**；仅当全部活跃分片均探查耗尽时才判定全局售罄。
+   - **跨片限购判重边界**：单槽版把“扣库存 + 写用户限购占位”塞进同一脚本的前提是两键同槽；拆成随机多片库存后**不能直接照搬同槽判重脚本**，必须额外引入**全局唯一约束**（如后端订单表 `(act_id, uid)` 唯一索引兜底 + 失败回补）或**稳定的用户归属规则**（如按 `uid` 固定映射限购分片，但需权衡各片负载与余量不均）。
+4. **秒杀集群与日常核心业务集群物理隔离**：防止大促极端流量波及日常登录、购物车等基础链路。
 
 ## 练习 {#ch8-exercises}
 
@@ -190,31 +203,57 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 <details>
 <summary>查看参考答案</summary>
 
-1. **键结构设计（单活动同槽原子操作 + 订单号精确匹配）**：
-   - 若单商品并发在单节点可承载范围（如 `< 8 万 QPS`），为保证“库存扣减 + 用户限购判重 + 订单状态登记”三步绝对原子，可使用活动 ID 作为 Hash Tag 使两键落在同一槽：
+1. **键结构设计（单槽基准版原子闭环 + 订单号精确匹配）**：
+   - 在单活动并发处于单分片主节点可承载范围内时，采用**单槽主线方案**：使用活动 ID 作为 Hash Tag 使两键落在同一哈希槽，保证“限购判重 + 库存预扣 + 订单占位登记”一步原子执行（若未来升级为 [8.3.2 节](#ch8-3-2) 所述的跨分片库存拆分扩展，则不能直接照搬此同槽脚本，需另配局部不足 `-2` 探测路由、全局唯一约束或稳定用户归属规则，以及超时扫描对账封堵发 MQ 崩溃空窗）：
      - 库存 Hash 键 `seckill:{act_88}:stock`：包含字段 `avail`（初值 `1000`）与 `sold`（初值 `0`）；
      - 已购用户与订单状态 Hash 键 `seckill:{act_88}:orders`：`field` 为 `uid`，`value` 存为 **`<order_id>:LOCKED`**（支付成功后由支付回调更新为 `<order_id>:PAID`）。
-   - **两条核心防错原则**：
+   - **三条核心防错原则**：
      1. **回补必须同时匹配 `order_id` 与可取消状态 `LOCKED`**（若只存 `uid -> "LOCKED"`，当用户取消订单 A 并重新抢到订单 B 后，订单 A 的迟到/重复取消消息仍会看到 `"LOCKED"`，从而误删订单 B 的占位并多加一件库存！）；
-     2. **服务端脚本固定数量为 `1`，绝不信任客户端传入的扣减/回补数量**（因为业务明确规定每单限购 1 双），并在脚本开头先做参数与键类型校验，防止中途报 `WRONGTYPE` 导致前置写入无法回滚。
+     2. **服务端脚本固定数量为 `1`，绝不信任客户端传入的扣减/回补数量**（因为业务明确规定每单限购 1 双）；
+     3. **在第一条写命令前完成全部键类型、字段严格十进制整数格式及越界校验**：不仅要查 `TYPE`，还必须同时读取并校验 `avail` 与 `sold` 均为 `HINCRBY`（Redis `string2ll`）可接受的严格十进制整数字符串（`'0'` 或 `^[1-9]%d*$`，拒绝空白、小数、非数字及前导零如 `'01'`）且落在 Lua 5.1 双精度可精确表示的业务合法范围 `[0, 1e9]` 内，同时确认扣减/回补后均不越界（扣减前确认 `avail >= 1` 且 `sold + 1 <= MAX_STOCK`；回补前确认 `sold >= 1` 且 `avail + 1 <= MAX_STOCK`）。
 2. **完整 Redis Function 库实现**：
    ```lua
    #!lua name=seckill_lib
 
-   -- 前置校验：确保键与参数完整且库存/订单键为 hash 或尚未创建（防止中途 WRONGTYPE 留下半截写入）
-   local function validate_inputs(keys, uid, order_id)
+   -- 业务库存上限 1e9（远小于 Lua 5.1 双精度可精确表示的整数上限 2^53 - 1，且避免 64 位整数溢出）
+   local MAX_STOCK = 1000000000
+
+   -- 严格校验字段值为 HINCRBY (string2ll) 可接受的无前导零非负十进制整数，且位于 [0, MAX_STOCK]
+   local function parse_stock_int(raw)
+     if type(raw) ~= 'string' then
+       return nil
+     end
+     if raw ~= '0' and not string.match(raw, '^[1-9]%d*$') then
+       return nil
+     end
+     local n = tonumber(raw)
+     if not n or n < 0 or n > MAX_STOCK or math.floor(n) ~= n then
+       return nil
+     end
+     return n
+   end
+
+   -- 全量前置校验：在执行任何写命令之前，校验参数、两键类型以及 avail / sold 两个字段的整数合法性
+   local function validate_and_load_stock(keys, uid, order_id)
      if #keys < 2 then
-       return 'ERR expected 2 keys'
+       return nil, nil, 'ERR expected 2 keys'
      end
      if not uid or uid == '' or not order_id or order_id == '' then
-       return 'ERR invalid uid or order_id'
+       return nil, nil, 'ERR invalid uid or order_id'
      end
      local t1 = redis.call('TYPE', keys[1]).ok
      local t2 = redis.call('TYPE', keys[2]).ok
      if (t1 ~= 'hash') or (t2 ~= 'hash' and t2 ~= 'none') then
-       return 'ERR unexpected key type'
+       return nil, nil, 'ERR unexpected key type'
      end
-     return nil
+     local raw_avail = redis.call('HGET', keys[1], 'avail')
+     local raw_sold  = redis.call('HGET', keys[1], 'sold')
+     local avail = parse_stock_int(raw_avail)
+     local sold  = parse_stock_int(raw_sold)
+     if not avail or not sold then
+       return nil, nil, 'ERR corrupted stock fields'
+     end
+     return avail, sold, nil
    end
 
    -- KEYS[1]=库存Hash, KEYS[2]=订单状态Hash; ARGV[1]=uid, ARGV[2]=order_id
@@ -222,39 +261,51 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
    -- 返回值：1=抢购成功, -1=重复购买, 0=库存不足
    redis.register_function('try_seckill', function(keys, args)
      local uid, order_id = args[1], args[2]
-     local err = validate_inputs(keys, uid, order_id)
+     local avail, sold, err = validate_and_load_stock(keys, uid, order_id)
      if err then return redis.error_reply(err) end
 
      if redis.call('HEXISTS', keys[2], uid) == 1 then
        return -1
      end
-     local avail = tonumber(redis.call('HGET', keys[1], 'avail') or '0')
      if avail < 1 then
        return 0
      end
+     if sold + 1 > MAX_STOCK then
+       return redis.error_reply('ERR stock counter overflow')
+     end
+
+     -- 所有校验通过后再集中执行写操作，避免中途报错留下半截写入
      redis.call('HINCRBY', keys[1], 'avail', -1)
      redis.call('HINCRBY', keys[1], 'sold', 1)
      redis.call('HSET', keys[2], uid, order_id .. ':LOCKED')
      return 1
    end)
 
-   -- 幂等取消回补：必须同时匹配 order_id 与 LOCKED 状态才删除占位并固定回补 1 件
+   -- 幂等取消回补：必须同时校验库存整数合法、匹配 <order_id>:LOCKED 且 sold >= 1，再删除占位并回补 1 件
    -- 既防同一订单重复取消，也防旧订单 A 的迟到取消消息误删新订单 B 或已支付订单！
    redis.register_function('rollback_seckill', function(keys, args)
      local uid, order_id = args[1], args[2]
-     local err = validate_inputs(keys, uid, order_id)
+     local avail, sold, err = validate_and_load_stock(keys, uid, order_id)
      if err then return redis.error_reply(err) end
 
      local expected = order_id .. ':LOCKED'
      if redis.call('HGET', keys[2], uid) ~= expected then
        return 0
      end
+     if sold < 1 or avail + 1 > MAX_STOCK then
+       return redis.error_reply('ERR invalid stock state for rollback')
+     end
+
      redis.call('HDEL', keys[2], uid)
      redis.call('HINCRBY', keys[1], 'avail', 1)
      redis.call('HINCRBY', keys[1], 'sold', -1)
      return 1
    end)
    ```
+3. **非法脏数据反例核验（无回滚风险拦截证明）**：
+   - **扣减反例**：若 `seckill:{act_88}:stock` 被运维误改造成 `avail = "1"`、`sold = "bad"`，调用 `try_seckill` 时在第一条 `HINCRBY` 之前就会被 `validate_and_load_stock` 的 `parse_stock_int("bad")` 拦截并返回 `ERR corrupted stock fields`——不会出现先扣掉 `avail` 变成 `0`、再在 `HINCRBY sold 1` 报错丢库存无订单的半截写入事故。
+   - **回补反例**：若 `avail = "bad"` 或 `sold = "0"` 而 `orders[uid] = "ord_1:LOCKED"`，调用 `rollback_seckill` 同样会在 `HDEL` 执行前被前置整数/边界校验拦下并返回错误，既不会误删订单占位，也不会把 `sold` 扣成负数。
+   - **关键提醒**：Lua / Redis Functions 内部没有事务回滚机制，**即便把写入命令换成 `redis.pcall` 捕获异常，也绝不会撤销此前已经执行的写命令**；因此所有前置校验必须在第一条写入之前全部完成。
 
 </details>
 
@@ -270,7 +321,7 @@ Redis 通过 `MULTI`（开启事务入队模式）、`EXEC`（批量串行执行
 1. **三大核心安全要素**：
    - **加锁与设过期时间必须单命令原子执行**：使用 `SET lock_key unique_val NX PX 30000`，防止 `SETNX` 后进程崩溃未执行 `EXPIRE` 造成永久死锁；
    - **锁值必须是当前客户端线程的全局唯一标识（如 `UUID:threadId`）**：标识锁归属权；
-   - **解锁必须使用 Lua 脚本原子校验唯一标识后删除**：防止线程 A 发生长耗时卡顿导致锁超时释放后，误把线程 B 新持有的锁直接 `DEL` 掉。
+   - **解锁必须原子校验唯一标识后删除**：**Redis 8.4+** 可直接使用原生命令 **`DELEX lock_key IFEQ <unique_val>`** 单步完成比较并删除；旧版本则继续使用 **Lua 脚本 / Function** 原子校验后 `DEL`，防止线程 A 长耗时卡顿导致锁超时释放后误删线程 B 新持有的锁。但需明确边界：**该机制仅防误删他人新锁，并不能阻止租约过期后旧持有者继续写入外部共享资源**（后者需借助 Fencing Token 与存储端校验解决）。
 2. **业务耗时超期的应对——Watchdog 看门狗续期**：加锁成功后由客户端后台守护线程每 `TTL / 3`（如 `10s`）检查当前业务线程是否仍存活持锁；若仍在执行则通过 Lua 校验唯一标识后自动将锁过期时间顺延回 `30s`；若客户端宕机则后台续期停止，锁到期自动释放。
 
 </details>

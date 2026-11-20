@@ -9,7 +9,7 @@ description: 穿透 Linux Namespaces 与 cgroups v2 内核机制、CRI/container
 
 云原生架构得以将分布式复杂性对业务隐藏，前提是拥有一套标准化、可编程、随时可销毁重建的**不可变基础设施**。许多开发者每天编写 Dockerfile 与 Kubernetes YAML，却误以为“容器是一台轻量级虚拟机”，以致在遇到容器内 `top` 看到宿主机全量内存、Pod 莫名被内核 `OOMKilled` 或高优服务无法抢占 GPU 资源时束手无策。本章整合原书第 11 章、第 14 章与附录 B，全面对齐 **Kubernetes 1.32+ 与 Linux 6.x/7.x 内核标准**：首先穿透 Linux Namespaces、**cgroups v2 统一层级**与淘汰 `dockershim` 后的 **CRI + `containerd`** 调用链；随后剖析 Pod 原子模型、原生 Sidecar 容器与声明式控制回路；最后详解 QoS 等级、节点压力驱逐排序与 **`Scheduling Framework` 调度流水线**。
 
-> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Docker 29.10、Linux/AMD64。
+> 核对日期：2026 年 11 月 20 日；基于 Linux 内核 cgroups v2 文档与 Kubernetes 官方文档核对（本地单机环境为 Go 1.27.4、Docker 29.10、Linux/AMD64，未在真实多节点 Kubernetes 集群执行全套调度与驱逐压测）。
 
 ## 8.1 Linux 容器内核基石与 CRI 标准运行时 {#ch8-1}
 
@@ -48,6 +48,17 @@ Pod 通过首先启动一个仅占几十 KB 的极简 **`Pause`（Infra）根容
 
 > [!TIP]
 > **Kubernetes 1.28+ / 1.33 GA 里程碑：原生 Sidecar 容器（`initContainers` + `restartPolicy: Always`）**：过去把网格代理或日志代理放在普通 `containers` 列表中存在两大痛点——① 业务容器启动比边车还快时，首波请求因网络未就绪直接报错；② 跑批处理 `Job` 主任务早已成功退出，但常驻边车不退出导致 `Job` 永远无法进入 `Completed` 态！现代 K8s 只需将边车定义在 `initContainers` 中并设置 **`restartPolicy: Always`**，内核级保证“**边车必定先于业务容器就绪启动，且当所有普通业务容器正常结束时自动优雅终止边车**”！
+
+容器启动后，`kubelet` 依靠**三种健康探针（Probes）**分工协同管理应用生命周期与流量准入，三者职责绝不可混用：
+
+| 探针类型 | 生效时机与判定目标 | 探针失败后的 `kubelet` 动作 | 典型工程定位 |
+| --- | --- | --- | --- |
+| **`startupProbe`**（启动探针） | 仅在容器刚启动阶段运行；**在其首次成功前，屏蔽 `readinessProbe` 与 `livenessProbe`** | 超过 `failureThreshold × periodSeconds` 仍未成功则按 `restartPolicy` 重启容器 | 保护 JVM、大模型加载等慢启动应用，避免冷启动期间被存活探针误杀 |
+| **`readinessProbe`**（就绪探针） | 启动通过后周期探测，判断容器当前是否适合接收线上业务流量 | **仅将该 Pod IP 从 Service 的 `EndpointSlice` 摘流，绝不重启容器**；恢复成功后自动重新导流 | 滚动发布预热、过载保护或本地关键初始化/短暂依赖不可用时的无损摘流 |
+| **`livenessProbe`**（存活探针） | 启动通过后周期探测，判断进程是否陷入死锁、事件循环卡死等无法自愈的内部故障 | 连续失败达到 `failureThreshold` 阈值后**杀掉并重启容器** | 仅检测本进程自身的轻量存活与核心线程活性 |
+
+> [!CAUTION]
+> **严禁把下游数据库、Redis 或第三方依赖的短暂抖动放进 `livenessProbe`！** 如果上游 50 个微服务 Pod 的 `livenessProbe` 都去执行 `SELECT 1` 探活数据库，一旦数据库发生几秒主从切换或网络闪断，全部 50 个 Pod 会同时判定存活失败并被 `kubelet` 集体重启；紧接着海量 Pod 冷启动并发重连与预热流量又会把刚恢复的数据库再次打垮，酿成**全集群级联重启雪崩**！`livenessProbe` 只能做进程内自检（不依赖外部网络）；对必要外部依赖的检查即使要做，也应谨慎放在 `readinessProbe` 中并评估全量摘流风险。
 
 ### 8.2.2 声明式控制器模式与高层封装生态 {#ch8-2-2}
 
@@ -103,7 +114,7 @@ Pod 的三个 **QoS 等级**由其容器资源声明自动推导，决定了宿�
 
 ## 练习 {#ch8-exercises}
 
-以下 2 道练习分别检验容器内存视图与 QoS 驱逐事故排查，以及面向高可用数据库与批处理混部的调度亲和/抢占设计。建议先独立作答，再展开核对参考答案。
+以下 3 道练习分别检验容器内存视图与 QoS 驱逐事故排查、Kubernetes 三种健康探针分工与级联重启排障，以及面向高可用在线服务与离线批处理混部的调度亲和/抢占设计。建议先独立作答，再展开核对参考答案。
 
 ### 练习 1：诊断两组线上 Pod 频繁退出码 137（OOMKilled）与被驱逐（Evicted）的根因
 
@@ -139,6 +150,28 @@ Pod 的三个 **QoS 等级**由其容器资源声明自动推导，决定了宿�
 2. **高低优先级抢占（PriorityClass + Preemption）**：为在线交易绑定 `priority: 100000` 的 `high-online` 类，为离线任务绑定 `priority: -100`（且可设 `preemptionPolicy: Never` 禁止离线任务互相抢占震荡）的 `low-batch` 类——一旦白天在线流量激增触发 HPA 扩容，调度器在 `PostFilter` 阶段会毫秒级自动抢占驱逐离线任务腾出节点资源。
 3. **跨可用区拓扑均匀打散（`topologySpreadConstraints`）**：在在线交易 Deployment 中配置 `topologyKey: topology.kubernetes.io/zone`、`maxSkew: 1`，强制调度器在 `Filter/Score` 阶段将副本均匀铺在 3 个 AZ。
 4. **原生 Sidecar 与配额围栏**：离线任务日志/监控辅助容器统一使用 `initContainers` + `restartPolicy: Always` 原生边车确保任务跑完即刻释放 Pod，并用 `ResourceQuota` 封顶离线命名空间总上限。
+
+</details>
+
+### 练习 3：排查慢启动与数据库抖动引发的 Pod 级联重启雪崩（三种探针分工实战）
+
+某核心订单服务（Spring Boot，冷启动加载本地缓存与预热需 `35～50 秒`）上线后配置了如下探针：
+- 未配置 `startupProbe`；
+- `livenessProbe`：`httpGet /actuator/health`，`initialDelaySeconds: 15`、`periodSeconds: 5`、`failureThreshold: 3`，且 `/actuator/health` 内部同时校验了 MySQL 连接池 `SELECT 1` 与 Redis `PING`；
+- `readinessProbe`：直接复用了同一个 `/actuator/health` 路径。
+
+上线后连续发生两起事故：① 每次滚动发布，新 Pod 经常在启动到第 `30 秒` 时就被杀掉反复进入 `CrashLoopBackOff`；② 某晚主库 MySQL 发生一次仅 `12 秒` 的主从切换，结果整个订单服务 `40` 个原本健康的 Pod 几乎同时重启，导致核心交易中断长达 `3 分钟`！请用 Kubernetes 三种探针的分工机制定位两起事故根因并给出重构方案。
+
+<details>
+<summary>查看参考答案</summary>
+
+1. **两起事故根因定位**：
+   - **事故 ①（缺 `startupProbe` 导致慢启动被存活探针反复误杀）**：该服务冷启动最慢需 `50 秒`，但 `livenessProbe` 在第 `15 秒` 就开始探测，连续 3 次失败（第 `15s`、`20s`、`25s`）在不足 `30 秒` 时便触发 `kubelet` 重启容器，导致应用永远走不完启动流程、陷入 `CrashLoopBackOff` 死循环。
+   - **事故 ②（把下游数据库依赖放进 `livenessProbe` 诱发级联重启雪崩）**：MySQL 主从切换持续 `12 秒`，恰逢 `livenessProbe` 每 `5 秒` 探测一次且内部执行 `SELECT 1`——短短 `10～15 秒` 内连续失败达到 `failureThreshold: 3`，全集群 `40` 个原本进程完全健康的订单 Pod 被 `kubelet` 集体强杀重启！重启本身非但不能修复外部数据库，反而让全部 `40` 个 Pod 同时进入 `50 秒` 冷启动并并发冲击刚切完主的数据库，将 `12 秒` 抖动放大为长达 `3 分钟` 的全站不可用。
+2. **三种探针精准分工重构方案**：
+   - **补齐 `startupProbe`（屏蔽冷启动期其余探针）**：指向应用启动完成端点（如 `/healthz/started`），配置 `periodSeconds: 5`、`failureThreshold: 18`（给予最高 `90 秒` 启动宽限期）。在其首次成功之前，`kubelet` 会完全屏蔽 `readinessProbe` 与 `livenessProbe`，既避免误杀，又能在正常 `35 秒` 启动完毕后立即放行无需死等 `initialDelaySeconds`。
+   - **净化 `livenessProbe`（严禁探测外部依赖）**：拆出独立轻量端点 `/healthz/live`，**只检查本进程自身内部活性**（如 HTTP 服务事件循环可响应、无内部死锁），彻底移除 MySQL/Redis 探测，仅在进程真正无法自愈时重启容器。
+   - **隔离 `readinessProbe`（失败仅摘流绝不重启）**：指向 `/healthz/ready`，用于校验本地预热与必要就绪条件；即便探测失败也**只从 Service `EndpointSlice` 摘除该 Pod 停止导入新流量、绝不重启容器**（对于全局共享数据库短时抖动，通常通过连接池快速失败与业务降级吸收，避免所有副本因共享依赖同时摘流导致无可用端点）。
 
 </details>
 
@@ -188,5 +221,6 @@ Pod 的三个 **QoS 等级**由其容器资源声明自动推导，决定了宿�
 
 - [Linux Kernel Documentation：Control Group v2（cgroups v2 Unified Hierarchy）](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 - [Kubernetes Official Documentation：Container Runtime Interface（CRI）& Sidecar Containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
+- [Kubernetes Official Documentation：Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
 - [Kubernetes Official Documentation：Pod Quality of Service（QoS）Classes & Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)
 - [Kubernetes Official Documentation：Scheduling Framework & Dynamic Resource Allocation（DRA）](https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/)

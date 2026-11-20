@@ -88,7 +88,9 @@ gdb -p <pid>
 
 当“线程 2（87748）持有 `mutex_B` 等待 `mutex_A`”且“线程 3（87747）持有 `mutex_A` 等待 `mutex_B`”闭环成立时，即可确凿定性为死锁，按[第 5 章资源有序分配法](./chapter-05#ch5-4)调整加锁顺序根治。
 
-> **生产安全警示**：`gdb -p` 会向目标进程发送 `SIGSTOP` 暂停全部线程，若服务尚有部分正常请求在跑会立刻引发超时雪崩！线上优先在摘流节点操作，或用非侵入式 `gcore` 导出核心转储后离线分析。
+> **生产安全警示（区分只读观测与 STW 内存转储）**：
+> - **需安排暂停窗口的高危取证（`gdb -p` / `gcore`）**：`gdb -p` 挂载后会暂停目标进程全部线程（Stop-The-World），若服务尚有正常请求在跑会立刻引发超时雪崩。GNU `gcore` 也**并非无暂停的非侵入手段**——它底层同样通过 GDB 执行 `attach → dump core → detach`，attach 与转储期间默认暂停目标进程全部线程，且进程内存越大、暂停时间越长、占用的磁盘空间越高。`gcore` 的价值仅在于“导出核心转储后尽快 detach，再在离线环境慢速分析以缩短手工交互停顿”，因此同样必须**先摘除线上流量并预留足够磁盘空间**。
+> - **低影响只读观测**：在未摘流的线上节点做初步排查时，应优先使用不暂停进程的只读观测手段——如 `perf` 采样、`bpftrace` 动态追踪锁等待与调用栈，或直接读取 `/proc/<pid>/task/*/stack` 观察阻塞内核栈；确需用户态完整内存现场时，再摘流执行 `gcore` 或 `gdb`。
 
 ## 8.3 网络指标观测与 TCP 全连接队列溢出排障 {#ch8-3}
 
@@ -103,9 +105,10 @@ gdb -p <pid>
 ip -s link show eth0
 # 关注点：LOWER_UP 表示物理链路连通；RX/TX 的 errors、dropped（内存/协议栈丢弃）、overruns（Ring Buffer 来不及处理溢出）均应为 0
 
-# 2. 查看监听端口与已建立 TCP 连接队列（替代 netstat）
-ss -lntpi          # -l 监听 -n 数字端口 -t TCP -p 进程 -i 内部 TCP 信息（含 rtt/cwnd）
-ss -s              # 查看各类 Socket 汇总统计
+# 2. 分别查看监听队列与已建立 TCP 连接（替代 netstat；注意 -l 仅列 LISTEN 态，看不到已建立连接）
+ss -lnt                        # 查看监听端口及其全连接队列 Recv-Q / Send-Q（需进程信息时加 -p）
+ss -tin state established      # 查看已建立 TCP 连接及内部状态（含 rtt、cwnd、notsent、retrans 等）
+ss -s                          # 查看各类 Socket 汇总统计
 
 # 3. 查看协议栈详细计数变化（替代 netstat -s，-z 显示零值，-a 输出绝对值）
 nstat -az | grep -E "TcpExtListen|TcpRetransSegs|TcpExtTCPSynRetrans"
@@ -116,9 +119,13 @@ nstat -az | grep -E "TcpExtListen|TcpRetransSegs|TcpExtTCPSynRetrans"
 | Socket 状态 | `Recv-Q` 含义 | `Send-Q` 含义 |
 | --- | --- | --- |
 | **`LISTEN`** | **当前全连接队列（Accept Queue）中等待 `accept()` 取走的连接数** | **全连接队列最大容量上限**，等于 `min(net.core.somaxconn, listen 的 backlog)` |
-| **`ESTABLISHED`** | Socket 接收缓冲区中**尚未被应用程序 `read()` 读走的字节数** | Socket 发送缓冲区中**已发出但尚未收到对端 ACK 确认的字节数** |
+| **`ESTABLISHED`** | Socket 接收缓冲区中**尚未被应用程序 `read()` 读走的字节数** | 内核 `write_seq - snd_una`：**既包含已发出但尚未收到对端 ACK 确认的字节（in-flight），也包含已排入发送队列但尚未发出的字节（`notsent`）** |
+
+> **排障口径校准（Linux 6.12 `net/ipv4/tcp_diag.c`）**：已连接 TCP 套接字的 `Send-Q` 统计的是 `write_seq - snd_una`，涵盖了全部已排入发送队列但尚未确认的字节，并非仅仅“已发未确认”字节。因此**不能单凭 `Send-Q` 偏大就直接断定发生了网络丢包**——对端接收窗口（`rwnd`）缩小或归零、拥塞窗口（`cwnd`）受限，或应用层突发写入过快，都会推高 `notsent` 使 `Send-Q` 增大；排查时必须结合 `ss -tin state established` 输出的 `notsent`、重传计数（`retrans`）与对端接收窗口（`rwnd`）综合判断。
 
 ### 8.3.2 实战三：TCP 全连接队列溢出排障闭环 {#ch8-3-2}
+
+本节聚焦线上现场的排查命令与处置闭环；关于半连接队列（Linux 4.4+ 全局 `ehash` 演进）、全连接队列内核机制与 SYN Flood 防御细节，可对照阅读[《图解网络》第 3 章半/全连接队列与 SYN Flood 防御](../network/chapter-03#ch3-3)。
 
 **故障现象**（提炼自原书第 10 章真实案例）：Web 服务运行一段时间后新客户端无法建连，偶发建连超时或连接被重置；在服务端用 `tcpdump` 抓包发现，客户端正常发来了三次握手的最后一个 `ACK`，服务端却毫无响应（或直接回了 `RST`）。
 
@@ -148,6 +155,10 @@ iostat -xz 1
 
 # 3. 现代 eBPF 动态追踪示例（bpftrace）：统计各进程发起系统调用次数，零代码侵入
 bpftrace -e 'tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }'
+
+# 4. 容器 cgroup v2 内存限额与 PSI 压力观测（Linux 4.20+ 内置 PSI，核对用量/OOM 计数/回收停顿）
+# cat /sys/fs/cgroup/<cgroup_path>/memory.current /sys/fs/cgroup/<cgroup_path>/memory.max
+# cat /sys/fs/cgroup/<cgroup_path>/memory.events /sys/fs/cgroup/<cgroup_path>/memory.pressure
 ```
 
 ### 8.4.2 实战四：Nginx 大日志安全分析与高效管道 {#ch8-4-2}
@@ -180,7 +191,7 @@ awk '{cnt[$7]++} END {for (p in cnt) print cnt[p], p}' access.log | sort -rn | h
 
 ## 练习 {#ch8-exercises}
 
-本节包含 4 道实战排障练习，覆盖 `ss` 队列解读、软中断与网卡丢包定位、磁盘与内存综合诊断以及高效日志统计管道编写。请先独立推演，再展开答案核对。
+本节包含 5 道实战排障练习，覆盖 `ss` 队列解读、软中断与网卡丢包定位、宿主机磁盘与内存综合诊断、宿主机与容器 cgroup v2 内存限额/PSI 联合诊断以及高效日志统计管道编写。请先独立推演，再展开答案核对。
 
 ### 练习 1：根据 `ss` 与 `nstat` 输出诊断建连故障
 
@@ -239,7 +250,27 @@ TcpExtListenDrops               48210
 
 </details>
 
-### 练习 4：优化一条慢速大日志统计命令
+### 练习 4：宿主机 `available` 充裕但容器进程反复异常退出的联合诊断
+
+一台 64 GiB 物理内存的 Linux 6.12 宿主机上运行着多个业务容器。晚高峰期间，运维在宿主机执行 `free -h` 看到 `available` 仍有 **20 GiB**、整机未发生 Swap 颠簸，但其中某个核心服务容器却每隔十几分钟便突然异常退出（退出码 **`137`**），且每次重启前的几分钟内业务 P99 延迟持续飙升。
+
+1. 为什么宿主机 `free -h` 显示还有 20 GiB `available`，该容器进程仍可能因内存耗尽被内核终止？
+2. 请写出在宿主机上进入该容器对应 **cgroup v2** 目录后应重点核查的四项接口文件（`memory.current`、`memory.max`、`memory.events` 以及 **`memory.pressure`（PSI）**），并说明它们各自用来印证什么结论。
+3. 能否仅凭容器退出码 `137` 就直接定性为 OOM？应结合哪些证据完成闭环确认？
+
+<details>
+<summary>查看参考答案</summary>
+
+1. **宿主机视图与容器限额视图分离**：容器与宿主机共享同一个 Linux 内核，宿主机 `free -h` 读取的是全局 `/proc/meminfo`，只反映整台物理机的剩余可回收内存；而每个容器受自身 **cgroup v2** 内存硬限（`memory.max`）严格隔离。只要该容器进程及其计入该 cgroup 的匿名页、页缓存（PageCache）与内核对象（Slab）总用量逼近并顶满 `memory.max`，且内核回收后仍无法满足新分配请求，就会在**该 cgroup 内部**触发 cgroup OOM Killer，与宿主机全局是否还有 20 GiB 可用内存无关。
+2. **cgroup v2 与 PSI 联合核查清单**：
+   - **`memory.current` vs `memory.max`（及软节流阈值 `memory.high`）**：比对容器当前内存使用量与硬限/软限配置，判断容器是否已长期紧贴限额运行；
+   - **`memory.events`**：重点观察 **`oom`**（触及硬限并进入 OOM 路径的累计次数）和 **`oom_kill`**（实际由 cgroup OOM Killer 强杀进程的次数）是否在故障时段同步递增，同时结合 `high`、`max` 计数判断节流与触顶频率；
+   - **`memory.pressure`（PSI，Pressure Stall Information）**：检查 `some`（至少有一个任务因等待内存回收而停顿的时间占比）与 `full`（容器内全部非空闲任务同时因内存回收停顿的时间占比）在 `avg10` / `avg60` / `avg300` 窗口的读数。若进程被杀前几分钟 `some`/`full` 持续攀升，即说明容器在真正 OOM 之前已陷入严重的**内存回收抖动（频繁触发 Direct Reclaim 阻塞工作线程）**，这正是重启前业务 P99 延迟飙升的直接原因。
+3. **退出码 `137` 的严谨辨析**：**不能单凭退出码 `137` 断定 OOM。**退出码 `137`（`128 + 9`）仅说明进程收到了 `SIGKILL (9)`——除了 cgroup OOM Killer 强杀外，容器优雅停机超时（如 `SIGTERM` 后超出宽限期被运行时强杀）或外部运维手工 `kill -9` 同样会产生 `137`。必须交叉印证 cgroup v2 `memory.events` 中的 `oom_kill` 增量、宿主机内核日志（`dmesg -T` 中的 `Memory cgroup out of memory` 记录）或编排层终止原因（如 Kubernetes `State.Terminated.Reason == OOMKilled`），方可最终实锤（容器侧 QoS 与退出码 137 完整案例详见[《架构修炼指南》第 8 章练习 1](../architecture/chapter-08#ch8-exercises)）。
+
+</details>
+
+### 练习 5：优化一条慢速大日志统计命令
 
 某同学需要从一份 10 GB 的 Nginx 访问日志中统计 **HTTP 状态码为 `500` 的请求里，访问次数最多的前 5 个 URL（第 7 列，状态码在第 9 列）**，写出了如下命令：
 
@@ -331,3 +362,5 @@ awk '$9 == 500 {cnt[$7]++} END {for (url in cnt) print cnt[url], url}' access.lo
 - [Brendan Gregg: The USE Method & Linux Performance Tools](https://www.brendangregg.com/usemethod.html)
 - [bpftrace Reference Guide](https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md)
 - [Linux Kernel Documentation: `skb` Drop Reasons (`kfree_skb_reason`)](https://docs.kernel.org/networking/statistics.html)
+- [Linux Kernel Documentation: Control Group v2 (`cgroup-v2`)](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+- [Linux Kernel Documentation: Pressure Stall Information (`PSI`)](https://docs.kernel.org/accounting/psi.html)

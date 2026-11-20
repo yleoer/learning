@@ -9,7 +9,7 @@ description: 系统剖析注册中心 CAP 取舍与 EndpointSlice、网关 I/O �
 
 当单次外部请求进入微服务集群化作数十次东西向内部调用时，动态漂移的容器 IP 如何实时寻址？边缘网关如何承载高并发路由与多端聚合？更致命的是，一旦末端某个边缘服务响应变慢，如何阻断故障沿调用链逆向传导酿成全站雪崩？本章整合原书第 7 章与第 8 章，全面汰换已退役的第一代 Netflix 套件（Eureka/Zuul/Ribbon/Hystrix），构建现代云原生流量治理体系：首先拆解服务发现 CAP 权衡、Kubernetes `EndpointSlice` 扩展机制、网关 I/O 模型与 **Gateway API**；随后剖析七种容错策略、断路器状态机、协程/虚拟线程时代的舱壁选型与重试风暴防护；最后打通从令牌桶到基于利特尔法则（Little's Law）的自适应限流。
 
-> 核对日期：2026 年 11 月 17 日；核对环境为 Go 1.27.4、Docker 29.10、Linux/AMD64。
+> 核对日期：2026 年 11 月 20 日；基于 Kubernetes、Envoy、Resilience4j 官方文档核对，练习 2 令牌桶代码于本地 Go 1.27.4、Linux/AMD64 编译并跑通边界验证（未部署大规模多节点网关与限流集群实测）。
 
 ## 5.1 服务注册发现、网关模型与多级拓扑均衡 {#ch5-1}
 
@@ -125,17 +125,19 @@ description: 系统剖析注册中心 CAP 取舍与 EndpointSlice、网关 I/O �
 
 ### 练习 2：用 Go 编写零后台协程的并发安全惰性令牌桶（Token Bucket）限流器
 
-请使用 Go 标准库实现一个并发安全的单机令牌桶结构体 `TokenBucket`（包含构造函数 `NewTokenBucket(rate, capacity float64)` 与非阻塞判定方法 `Allow(n float64) bool`）：要求**不启动任何后台定时器 Goroutine**，仅通过请求到达时的单调时钟差值惰性补充令牌，且桶内令牌数绝不超过容量上限 `capacity`。
+请使用 Go 标准库实现一个并发安全的单机令牌桶结构体 `TokenBucket`（包含构造函数 `NewTokenBucket(rate, capacity float64) (*TokenBucket, error)` 与非阻塞判定方法 `Allow(n float64) bool`）：要求**不启动任何后台定时器 Goroutine**，仅通过请求到达时的单调时钟差值惰性补充令牌；同时必须防御非法参数（负数、`0`、`NaN`、`±Inf`），确保桶内令牌数始终处于 `[0, capacity]` 区间内且不会被异常输入污染。
 
 <details>
 <summary>查看参考答案</summary>
 
-利用前后两次请求的时间差 `elapsed * rate` 按需惰性结算新增令牌，时间与空间复杂度均为严格的 `O(1)`，单实例创建十万个按租户维度的限流桶也不会产生任何后台协程调度开销：
+利用前后两次请求的时间差 `elapsed * rate` 按需惰性结算新增令牌，时间与空间复杂度均为严格的 `O(1)`，单实例创建十万个按租户维度的限流桶也不会产生任何后台协程调度开销；同时在构造器与 `Allow` 入口前置拦截非有限正数，彻底堵死浮点边界漏洞：
 
 ```go
 package ratelimit
 
 import (
+	"errors"
+	"math"
 	"sync"
 	"time"
 )
@@ -148,16 +150,27 @@ type TokenBucket struct {
 	lastSync time.Time // 上次结算时间戳
 }
 
-func NewTokenBucket(rate, capacity float64) *TokenBucket {
+func isFinitePositive(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
+}
+
+func NewTokenBucket(rate, capacity float64) (*TokenBucket, error) {
+	if !isFinitePositive(rate) || !isFinitePositive(capacity) {
+		return nil, errors.New("rate and capacity must be finite positive numbers")
+	}
 	return &TokenBucket{
 		rate:     rate,
 		capacity: capacity,
 		tokens:   capacity, // 初始满桶，允许冷启动合法突发
 		lastSync: time.Now(),
-	}
+	}, nil
 }
 
 func (b *TokenBucket) Allow(n float64) bool {
+	if !isFinitePositive(n) {
+		return false
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -173,6 +186,11 @@ func (b *TokenBucket) Allow(n float64) bool {
 	return true
 }
 ```
+
+**关键边界反例校验说明**（以下漏洞若未做前置拦截会直接击穿限流器）：
+1. **防负数反充（`Allow(-1)`）**：若 `Allow` 只写 `if b.tokens < n { return false }`，由于 `b.tokens >= 0 > -1`，条件为 `false` 会直接放行，随后 `b.tokens -= -1` 反而给桶凭空增加令牌，甚至突破 `capacity` 上限。
+2. **防 `NaN` 永久污染（`Allow(math.NaN())`）**：IEEE 754 规定任何数与 `NaN` 的大小比较都返回 `false`，因此 `b.tokens < NaN` 为 `false`，不仅错误放行本次请求，还会通过 `b.tokens -= NaN` 把余额永久污染为 `NaN`；此后连 `min(b.capacity, b.tokens + ...)` 与后续所有 `b.tokens < n` 均被传染失效，限流器彻底形同虚设。
+3. **防非法构造与溢出上限**：构造器拒绝 `rate <= 0`、`capacity <= 0` 及 `NaN`/`±Inf`；`Allow` 仅接受有限正数（生产中若业务令牌成本恒为整数，也可直接将 `n` 限定为正整数 `int` 进一步收窄输入面）；补充结算用 `min(b.capacity, ...)`（Go 1.21+ 内置）保证余额绝不超过 `capacity` 且始终维持在 `[0, capacity]` 内。
 
 </details>
 

@@ -18,9 +18,10 @@ description: 剖析全局字典渐进式 Rehash、listpack/跳表/SDS 编码、R
 Redis 顶层键空间是一个全局哈希表，通过链式哈希解决冲突。随着键数量增长，冲突链拉长会使 `O(1)` 查找退化为 `O(N)`。为避免一次性搬迁千万级键阻塞单线程，Redis 维护 `ht[0]` 与 `ht[1]` 两张表实施**渐进式 Rehash**，其精确触发条件与推进机制如下：
 
 1. **装载因子与两档扩容阈值**：设 `load_factor = 已存键总数 / 哈希桶数组大小`：
-   - 当 **`load_factor >= 1` 且当前未执行 `BGSAVE` 或 `BGREWRITEAOF` 子进程**时，启动扩容（分配 `2` 倍于当前容量的幂次空间）；若正在持久化则暂缓扩容，避免桶迁移大量修改内存页触发操作系统写时复制（COW，详见 [3.2.1 节](./chapter-03#ch3-2-1)）。
-   - 当 **`load_factor >= 5`** 时，说明冲突链已严重恶化，无论是否正在持久化均**强制立即启动扩容**。
-2. **分摊迁移与定时兜底**：扩容期间设置 `rehashidx = 0`。此后**每处理一次客户端增删改查请求，顺带将旧表 `rehashidx` 桶位上的整条冲突链迁移至新表并将 `rehashidx + 1`**；若实例空闲无请求，后台每 `100ms` 运行的 `databasesCron` 也会每次最多花 `1ms` 主动推进一批桶迁移。Rehash 期间新增键直接写入新表，查改删则依次检索旧表与新表，全部迁完后释放旧表空间。
+   - 当字典处于正常可扩容状态（`DICT_RESIZE_ENABLE`）且 **`load_factor >= 1`** 时，启动扩容（分配 `2` 倍于当前容量的幂次空间）；
+   - 当存在 `BGSAVE` 或 `BGREWRITEAOF` 子进程时，全局字典进入暂缓扩容状态（`DICT_RESIZE_AVOID`），避免桶迁移大量修改内存页触发操作系统写时复制（COW，详见 [3.2.1 节](./chapter-03#ch3-2-1)）；仅当 **`load_factor >= 4`**（Redis 8.10.3 `dict_force_resize_ratio` 实测为 **`4`**，早期版本曾为 `5`）时，说明冲突链已严重恶化，才触发**强制扩容**；
+   - 若字典明确处于 **`DICT_RESIZE_FORBID`** 禁止扩容状态，即便装载因子超过 `dict_force_resize_ratio` 也**不可被强行覆盖**。
+2. **分摊迁移与定时兜底**：扩容期间设置 `rehashidx = 0`。客户端增删改查期间，Redis 一方面按步进推进旧表桶迁移（跳过空桶并受单步空桶数上限约束），另一方面在访问具体键时**可优先就地搬迁本次命中的旧表桶**（并非每条命令机械搬完 `rehashidx` 指向的单个桶后直接加一）；若实例空闲无请求，后台每 `100ms` 运行的 `databasesCron` 也会每次最多花 `1ms` 主动推进一批桶迁移。Rehash 期间新增键直接写入新表，查改删则依次检索旧表与新表，全部迁完后释放旧表空间。
 
 ### 2.1.2 SDS、listpack、quicklist、跳表与整数集合 {#ch2-1-2}
 
@@ -34,13 +35,13 @@ Redis 顶层键空间是一个全局哈希表，通过链式哈希解决冲突�
 
 ### 2.1.3 五大基础类型编码映射与复杂度四句口诀 {#ch2-1-3}
 
-在 **Redis 8.10.3** 中实测核验的五种基础类型底层编码切换规则与查询复杂度汇总如下——注意 **Redis 7.0+ 单节点小 List 直接采用纯 `listpack`，Redis 7.2+ 小规模字符串 Set 也新增了 `listpack` 编码**：
+在 **Redis 8.10.3** 中实测核验的五种基础类型底层编码切换规则与查询复杂度汇总如下——注意小 `List` 的两步演进：**Redis 7.0** 是将 `quicklist` 内部节点从 `ziplist` 改为 `listpack`（键编码仍为 `quicklist`），直至 **Redis 7.2** 才对小规模 `List` 直接采用纯 `listpack` 编码，并同步为小规模字符串 `Set` 新增了 `listpack` 编码：
 
 | 数据类型 | 紧凑编码及触发上限（Redis 8 默认配置） | 大规模标准编码 | 慢操作避坑与复杂度核心口诀 |
 | --- | --- | --- | --- |
 | **`String`** | `int`（64 位有符号整数）；`embstr`（短串嵌入分配） | `raw`（独立动态 `SDS`） | 单键 `GET`/`SET`/`INCR` 均为 `O(1)`，但 `500MB` 超大 String 网络收发仍会卡主线程 |
 | **`Hash`** | **`listpack`**（字段数 `≤ 512` 且单键值 `≤ 64B`；启用字段过期时转为紧凑编码 **`listpackex`**） | `hashtable` | `HGET`/`HSET`（原 `HMSET` 已弃用）单字段 `O(1)`；**严禁对大 Hash 执行 `HGETALL` `O(N)`，改用 `HSCAN`** |
-| **`List`** | **`listpack`**（单节点内紧凑存放） | `quicklist` | 首尾 `LPUSH`/`RPOP` 与 `LLEN` 均为 **`O(1)`**；按索引 `LINDEX`/`LSET` 及长区间 `LRANGE` 为 `O(N)` |
+| **`List`** | **`listpack`**（7.2+，小列表单节点内直接紧凑存放；7.0 为 `quicklist` 节点改用 `listpack`） | `quicklist` | 首尾 `LPUSH`/`RPOP` 与 `LLEN` 均为 **`O(1)`**；按索引 `LINDEX`/`LSET` 及长区间 `LRANGE` 为 `O(N)` |
 | **`Set`** | `intset`（纯整数且 `≤ 512` 个）；**`listpack`**（非整数但元素 `≤ 128` 个且单值 `≤ 64B`，7.2+） | `hashtable` | `SADD`/`SISMEMBER`/`SCARD` 为 `O(1)`；`SMEMBERS` 与大集合交并差 `SINTER`/`SUNION`/`SDIFF` 耗时高，**7.0+ 仅求交集基数优先用 `SINTERCARD ... LIMIT`** |
 | **`Sorted Set`** | **`listpack`**（元素 `≤ 128` 个且单成员 `≤ 64B`） | `skiplist` + `hashtable` | 哈希表支撑 `ZSCORE` `O(1)`，跳表支撑 `ZADD` 与统一范围查询 **`ZRANGE ... BYSCORE`**（6.2+ 取代已弃用的 `ZRANGEBYSCORE`）`O(log N + M)`；6.2+ 新增 `ZDIFF` |
 
@@ -112,13 +113,17 @@ GEOSEARCH cars:loc FROMLONLAT 116.40 39.91 BYRADIUS 5 km ASC COUNT 10 WITHDIST
 
 ```bash
 # 1. 写入消息并近似裁剪保留最近 10000 条（命令行调用时注意给 ~ 和 * 加引号防 Shell 展开）
+#    返回值是服务端按当前毫秒时间戳自动生成的真实消息 ID，例如 "1763350000000-0"
 XADD mq:orders MAXLEN ~ 10000 * order_id 9001 amount 199
-# 2. 创建消费组与组内消费者拉取未投递新消息（>）
+# 2. 创建消费组与组内消费者拉取未投递新消息（>），记录返回的真实 <msg-id>
 XGROUP CREATE mq:orders cg_pay 0 MKSTREAM
 XREADGROUP GROUP cg_pay worker_1 COUNT 10 BLOCK 2000 STREAMS mq:orders >
-# 3. 业务处理成功后确认（从消费组 PEL 待确认列表移除）
-XACK mq:orders cg_pay 1700000000000-0
-# 4. Redis 6.2+ 超时待确认消息接管：worker_2 自动扫描并认领空闲超 60000ms 未 XACK 的 PEL 消息
+# 3. 业务处理成功后，必须传入 XREADGROUP 实际返回的 <msg-id> 执行确认（传错或写死虚构 ID 会返回 0）
+#    注意：XACK 仅将该 ID 从消费组 PEL 移除，不会从 Stream 本体删除该消息！
+XACK mq:orders cg_pay <msg-id>
+# 4. 用 XPENDING 验证消费组待确认数已减少（由 1 降为 0）
+XPENDING mq:orders cg_pay
+# 5. Redis 6.2+ 超时待确认消息接管：worker_2 自动扫描并认领空闲超 60000ms 未 XACK 的 PEL 消息
 XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
 ```
 
@@ -218,7 +223,7 @@ XAUTOCLAIM mq:orders cg_pay worker_2 60000 0-0 COUNT 10
 <details>
 <summary>查看参考答案</summary>
 
-1. **两级触发阈值**：① 正常情况下，当装载因子 `used / size >= 1` 且当前没有 `BGSAVE`（RDB）或 `BGREWRITEAOF` 子进程运行时，立即启动扩容；② 当存在持久化子进程时，允许装载因子暂时上升，直到 **`used / size >= 5`** 才强制扩容。
+1. **两级触发阈值与禁用边界**：① 正常可扩容态（`DICT_RESIZE_ENABLE`）下，当装载因子 `used / size >= 1` 且当前没有 `BGSAVE`（RDB）或 `BGREWRITEAOF` 子进程运行时，立即启动扩容；② 当存在持久化子进程进入抑制态（`DICT_RESIZE_AVOID`）时，允许装载因子暂时上升，直到 **`used / size >= 4`**（Redis 8.10.3 `dict_force_resize_ratio` 实测为 `4`，早期版本曾为 `5`）才强制扩容；③ 若字典处于 `DICT_RESIZE_FORBID` 禁止扩容态，则不会被 `dict_force_resize_ratio` 强行覆盖。
 2. **持久化期间暂缓扩容的原因**：持久化子进程依赖操作系统的**写时复制**（Copy-On-Write）与主进程共享物理内存页。一旦触发渐进式 Rehash，大量哈希桶指针修改会高频污染众多 `4 KiB` 物理内存页，迫使内核不断复制新物理页，既拖慢主线程又会导致实例物理内存激增甚至触发 OOM。
 
 </details>

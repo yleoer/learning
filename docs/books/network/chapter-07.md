@@ -1,17 +1,17 @@
 ---
 title: 第 7 章 HTTPS、PKI 信任体系与 TLS 1.3 现代安全演进
-description: 对齐 RFC 8446（TLS 1.3）、RFC 10024（后量子混合密钥交换）与 2025–2026 PKI 生态变迁，系统梳理密码学基石、证书链验签、TLS 握手演进、0-RTT 安全边界及 OCSP 退场后的 HTTPS 优化。
+description: 对齐 RFC 9846（TLS 1.3，取代原 RFC 8446）、RFC 10024（后量子混合密钥交换）与 2025–2026 PKI 生态变迁，系统梳理密码学基石、证书链验签、TLS 握手演进、0-RTT 安全边界及 OCSP 退场后的 HTTPS 优化。
 ---
 
 # 第 7 章 HTTPS、PKI 信任体系与 TLS 1.3 现代安全演进
 
 ## 本章要点
 
-明文 HTTP 暴露在公网上面临**窃听、篡改、冒充**三大致命威胁，而 HTTPS 通过在传输层（TCP 或 QUIC）与应用层之间引入 **TLS（Transport Layer Security）** 安全层，一次性解决了机密性、完整性与身份认证问题。原书《图解网络》将 HTTPS 拆散在 3.1、3.3、3.4、3.5 与 4.15 节中，不仅大段重复证书链与握手流程，且以早已废除的 **TLS 1.2 RSA 密钥交换**作为主线，还遗留了“私钥加密=数字签名”“客户端联网向 CA 请求中间证书”“TLS 记录层包含压缩与 MAC”“混淆 1-RTT/0-RTT 重放风险”以及推荐已 EOL 的 OpenSSL 1.1.1 和 **Let's Encrypt 2025 已永久关闭的 OCSP** 等多处过时或错误表述。本章全面重构，以 **TLS 1.3（RFC 8446）**、**后量子混合密钥交换 `X25519MLKEM768`（RFC 10024）**、**ECH** 与 **2025–2026 证书吊销新格局**为主线展开。
+明文 HTTP 暴露在公网上面临**窃听、篡改、冒充**三大致命威胁，而 HTTPS 通过在传输层（TCP 或 QUIC）与应用层之间引入 **TLS（Transport Layer Security）** 安全层，一次性解决了机密性、完整性与身份认证问题。原书《图解网络》将 HTTPS 拆散在 3.1、3.3、3.4、3.5 与 4.15 节中，不仅大段重复证书链与握手流程，且以早已废除的 **TLS 1.2 RSA 密钥交换**作为主线，还遗留了“私钥加密=数字签名”“客户端联网向 CA 请求中间证书”“TLS 记录层包含压缩与 MAC”“混淆 1-RTT/0-RTT 重放风险”以及推荐已 EOL 的 OpenSSL 1.1.1 和 **Let's Encrypt 2025 已永久关闭的 OCSP** 等多处过时或错误表述。本章全面重构，以 **TLS 1.3（RFC 9846，取代原 RFC 8446）**、**后量子混合密钥交换 `X25519MLKEM768`（RFC 10024）**、**ECH** 与 **2025–2026 证书吊销新格局**为主线展开。
 
 读完本章后，应能准确辨析对称 AEAD、密钥协商与数字签名的密码学分工，完整复盘 PKI 离线证书链验签与中间人攻防，清晰对比 TLS 1.2 RSA/ECDHE 与 TLS 1.3 1-RTT 握手，精准界定 `psk_dhe_ke` 与 0-RTT Early Data 的安全边界，并掌握 2026 年主流 HTTPS 性能优化方案。
 
-> 核对日期：2026 年 11 月 20 日；核对环境为 RFC 8446（TLS 1.3）、RFC 8470（Early Data）、RFC 8996（弃用 TLS 1.0/1.1）、RFC 10024（X25519MLKEM768）、OpenSSL 3.5 LTS 与 Let's Encrypt 2025 公告。
+> 核对日期：2026 年 11 月 20 日；核对环境为 RFC 9846（TLS 1.3，2026 年 7 月发布，取代原 RFC 8446）、RFC 8470（Early Data）、RFC 6176/7568（禁用 SSL 2.0/3.0）、RFC 8996（弃用 TLS 1.0/1.1）、RFC 10024（X25519MLKEM768）、OpenSSL 3.5 LTS 与 Let's Encrypt 2025 公告。
 
 ## 7.1 HTTPS 密码学基石与 PKI 证书链 {#ch7-1}
 
@@ -48,11 +48,11 @@ HTTPS 并非单一算法，而是三类密码学原语的精密组合：
 
 ## 7.2 TLS 握手演进：从 TLS 1.2 到 TLS 1.3 与后量子时代 {#ch7-2}
 
-> **历史清理**：SSL 2.0/3.0 与 TLS 1.0/1.1 因存在大量协议漏洞已由 **RFC 8996（2021）** 正式弃用。当前互联网由 **TLS 1.3（RFC 8446）** 主导，少量存量系统兼容 TLS 1.2。
+> **历史清理**：SSL 2.0/3.0 早已分别由 **RFC 6176（2011）** / **RFC 7568（2015）** 禁用，TLS 1.0/1.1 则由 **RFC 8996（2021）** 正式弃用。当前互联网由 **TLS 1.3（RFC 9846，2026 年 7 月发布，取代原 RFC 8446 且保持线缆协议完全兼容）** 主导，少量存量系统兼容 TLS 1.2。
 
 ### 7.2.1 为何 TLS 1.2 RSA 密钥交换被淘汰、ECDHE 胜出 {#ch7-2-1}
 
-| 维度 | TLS 1.2 RSA 密钥交换（已废弃） | TLS 1.2 ECDHE 密钥交换 | TLS 1.3（RFC 8446，现行标准） |
+| 维度 | TLS 1.2 RSA 密钥交换（已废弃） | TLS 1.2 ECDHE 密钥交换 | TLS 1.3（RFC 9846，现行标准） |
 | --- | --- | --- | --- |
 | **完整握手 RTT** | 2 RTT（4 次消息交互） | 2 RTT（开 False Start 可抢跑至 1 RTT） | **原生 1 RTT**（会话恢复支持 **0-RTT**） |
 | **密钥交换机制** | 客户端生成 `pre-master`，用服务端**静态 RSA 公钥**加密发送 | 双方现场生成**临时椭圆曲线密钥对**（如 `x25519`），通过椭圆曲线点乘（d<sub>1</sub>Q<sub>2</sub> = d<sub>2</sub>Q<sub>1</sub>）算出共享秘密，服务端用证书私钥对临时参数签名防篡改 | 客户端在 `ClientHello` 中预测性携带 `key_share` 临时公钥，支持 ECDHE、FFDHE 及**后量子混合 `X25519MLKEM768`** |
@@ -253,9 +253,9 @@ TLS 1.3 相比 TLS 1.2 的四大安全与速度飞跃：
 
 ## 参考资料
 
-- [RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3](https://datatracker.ietf.org/doc/html/rfc8446)
+- [RFC 9846: The Transport Layer Security (TLS) Protocol Version 1.3（2026 年 7 月发布，取代原 RFC 8446）](https://datatracker.ietf.org/doc/html/rfc9846)
 - [RFC 8470: Using Early Data in HTTP (`Early-Data` / `425 Too Early`)](https://datatracker.ietf.org/doc/html/rfc8470)
-- [RFC 8996: Deprecating TLS 1.0 and TLS 1.1](https://datatracker.ietf.org/doc/html/rfc8996)
+- [RFC 6176 (Prohibiting SSL 2.0) / RFC 7568 (Deprecating SSL 3.0) / RFC 8996 (Deprecating TLS 1.0 and TLS 1.1)](https://datatracker.ietf.org/doc/html/rfc8996)
 - [RFC 7918: Transport Layer Security (TLS) False Start](https://datatracker.ietf.org/doc/html/rfc7918)
 - [RFC 10024: Hybrid Key Exchange in TLS 1.3 (`X25519MLKEM768`)](https://datatracker.ietf.org/doc/html/rfc10024)
 - [Let's Encrypt Official Announcement: Ending OCSP Support in 2025](https://letsencrypt.org/2024/12/05/ending-ocsp/)

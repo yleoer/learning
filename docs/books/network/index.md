@@ -5,7 +5,7 @@ description: 以《图解网络》为主线，结合 RFC 9110–9114、RFC 9293�
 
 # 图解网络
 
-本指南以小林 coding 的《图解网络》（v4.0）为主线，结合 **RFC 9110–9114（HTTP/1.1–3）**、**RFC 9293（TCP）**、**RFC 9000–9002（QUIC）**、**RFC 8446（TLS 1.3）** 与 **Linux 6.12 LTS** 内核网络栈实现，对原书全部技术篇章进行了系统的**去重、精简、勘误与现代知识重组**。原书由多篇独立公众号文章汇编而成，跨节重复显著（例如三次握手与队列机制反复出现四次、`TIME_WAIT` 出现五次、HTTP/2 与 QUIC 多次重叠），本指南将每个知识点收拢至唯一权威出处，并通过章节间链接串成一条完整脉络。
+本指南以小林 coding 的《图解网络》（v4.0）为主线，结合 **RFC 9110–9114（HTTP/1.1–3）**、**RFC 9293（TCP）**、**RFC 9000–9002（QUIC）**、**RFC 9846（TLS 1.3，取代原 RFC 8446）** 与 **Linux 6.12 LTS** 内核网络栈实现，对原书全部技术篇章进行了系统的**去重、精简、勘误与现代知识重组**。原书由多篇独立公众号文章汇编而成，跨节重复显著（例如三次握手与队列机制反复出现四次、`TIME_WAIT` 出现五次、HTTP/2 与 QUIC 多次重叠），本指南将每个知识点收拢至唯一权威出处，并通过章节间链接串成一条完整脉络。
 
 全专题围绕四个核心工程问题展开：**一次网络请求如何穿越协议栈与网络设备、TCP 如何在不可靠 IP 之上实现状态机管理与高吞吐可靠传输、HTTP 与 TLS 如何演进至 QUIC/HTTP/3 与后量子安全时代、线上丢包与连接异常如何借助现代 Linux 工具链定位根因**。
 
@@ -32,7 +32,7 @@ description: 以《图解网络》为主线，结合 RFC 9110–9114、RFC 9293�
 | --- | --- |
 | NAPI 硬中断“发起软中断后立刻恢复屏蔽的中断”、`ksoftirqd` 负责全部软中断、`sk_buff` 克隆整包拷贝数据 | 纠正为 NAPI 在 `napi_poll` 收空队列后才恢复硬中断；`NET_RX` 优先在 `irq_exit()` 执行，超预算才交由 `ksoftirqd`；`skb_clone()` 共享数据载荷，见[第 1 章](./chapter-01#ch1-3-2) |
 | DHCP“全程使用广播”、IPv4 无链路本地地址、`ping 0.0.0.0` 一律报 `No route to host`、使用 `ifconfig`/`route`/`arp` | 纠正 DHCP 续租（T1）为单播；补齐 IPv4 `169.254.0.0/16`、NDP/SLAAC、DoH/DoT/DoQ、STUN/TURN/ICE、ICMP 源点抑制已废弃（RFC 6633）；注明 Linux `ping 0.0.0.0` 指向本机；统一使用 `ip`/`ss`/`nstat`，见[第 2 章](./chapter-02#ch2-3) |
-| 沿用 RFC 793、`somaxconn=128`、`tcp_syn_retries=5`（63 s）、2.6.32 `max_qlen_log` 队列公式、HTTP 仅靠 `\r\n` 划分报文边界 | 升级至 **RFC 9293**；校准 Linux 6.12 默认值（`somaxconn=4096`、`tcp_syn_retries=6` ≈ 127 s、`tcp_syncookies=1`、`tcp_fastopen=1`）；更新 Linux 4.4+ 全局无锁 `ehash`；纠正“TCP 粘包”与 `Content-Length`/`chunked` 边界；交代 TFO 公网僵化现状，见[第 3 章](./chapter-03#ch3-3) |
+| 沿用 RFC 793、`somaxconn=128`、`tcp_syn_retries=5`（63 s）、2.6.32 `max_qlen_log` 队列公式、HTTP 仅靠 `\r\n` 划分报文边界 | 升级至 **RFC 9293**；校准 Linux 6.12 默认值（`somaxconn=4096`、`tcp_syn_retries=6` 与 `tcp_syn_linear_timeouts=4` 下约 67 s 最后一次重传、约 **131 s** 超时，纯指数退避旧内核下 `6` 次才是 127 s；`tcp_syncookies=1`、`tcp_fastopen=1`）；更新 Linux 4.4+ 全局无锁 `ehash`；纠正“TCP 粘包”与 `Content-Length`/`chunked` 边界；交代 TFO 公网僵化现状，见[第 3 章](./chapter-03#ch3-3) |
 | 误读 4.11 `TIME_WAIT` 收 SYN 源码中的 `\|\|` 为 `&&`；`tcp_tw_reuse` 默认关闭；进程崩溃一律发 FIN | 依据内核源码纠正 `TIME_WAIT` 合法重用条件为 `seq > rcv_nxt \|\| tsval > ts_recent`；校准 Linux 4.12+ `tcp_tw_reuse=2` 且已移除 `tcp_tw_recycle`；补齐未读数据崩溃发 RST、RFC 5961 与 `ss -K`，见[第 4 章](./chapter-04#ch4-3-2) |
 | 笔误 `RFC6289`、零窗口探测次数自相矛盾、拥塞控制止步 Reno、称 `free` 的 `buff/cache` 反映 TCP 缓冲区 | 纠正为 **RFC 6298**；统一持续定时器指数退避行为；升级至 **RACK-TLP（RFC 8985）**、**CUBIC（RFC 9438）** 与 **BBR**；纠正 `tcp_mem` 压力阈值、2×BDP 记账与 `/proc/net/sockstat` 观测，见[第 5 章](./chapter-05#ch5-3) |
 | `ETag` 与 `Last-Modified` 优先级写反、3.2 误写 `ETag` 请求头、推荐 HTTP/2 Server Push、HTTP/3 仍为草案且写错 QPACK 静态表（91 项）与 QUIC 连接流控公式 | 按 **RFC 9110–9114 / 9204 / 9000** 全面校准：`If-None-Match` 存在时忽略 `If-Modified-Since`；标注 Server Push 已移除并转向 **103 Early Hints**；更新 QPACK 99 项静态表与 QUIC `MAX_DATA` 独立流控模型；补齐 `zstd`/AVIF/AV1，见[第 6 章](./chapter-06#ch6-4) |
@@ -47,7 +47,7 @@ description: 以《图解网络》为主线，结合 RFC 9110–9114、RFC 9293�
 
 ## 延伸参考资料
 
-- [IETF RFC Editor（RFC 9110–9114 / 9293 / 9000–9002 / 8446）](https://www.rfc-editor.org/)
+- [IETF RFC Editor（RFC 9110–9114 / 9293 / 9000–9002 / 9846）](https://www.rfc-editor.org/)
 - [Linux Kernel Networking Documentation](https://docs.kernel.org/networking/index.html)
 - [Linux Programmer's Manual (`tcp(7)`, `ip(7)`, `socket(7)`)](https://man7.org/linux/man-pages/man7/tcp.7.html)
 - [High Performance Browser Networking (Ilya Grigorik)](https://hpbn.co/)

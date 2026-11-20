@@ -102,7 +102,7 @@ tcpdump -i eth0 -nn -s0 'host 10.0.0.12 and tcp port 443' -w capture.pcap
 - **入站方向（Inbound）**：`网卡 → tcpdump（AF_PACKET） → netfilter（nftables / iptables INPUT）`。因此**即便本机防火墙在 INPUT 链丢弃了数据包，`tcpdump` 依然能抓到它**！
 - **出站方向（Outbound）**：`协议栈 → netfilter（OUTPUT） → tcpdump → 网卡`。因此**若本机防火墙在 OUTPUT 链丢弃了出包，`tcpdump` 是抓不到的**！
 
-将 `.pcap` 拖入 **Wireshark** 后，善用 `Statistics → Flow Graph → TCP Flows` 一览握手/挥手/重传全局时序，结合 `Expert Information` 快速定位 Retransmission、Dup ACK、ZeroWindow 与 RST；同时搭配 **`curl -v --http3-only`**（探测 HTTP/3）、**`openssl s_client -connect host:443 -tls1_3 -showcerts`**（核验 TLS 1.3 证书链与后量子群组）和 **`dig HTTPS example.com`**（查 H3/ECH DNS 记录），覆盖从 L2 到 L7 的完整观测能力。
+将 `.pcap` 拖入 **Wireshark** 后，善用 `Statistics → Flow Graph → TCP Flows` 一览握手/挥手/重传全局时序，结合 `Expert Information` 快速定位 Retransmission、Dup ACK、ZeroWindow 与 RST；而在动用 `tcpdump` 抓全量包之前，遇到域名访问失败应先做**轻量分层定界**：用 **`dig`** 核查 DNS 状态码（如 `NXDOMAIN` vs `SERVFAIL`）与 `HTTPS` 记录，用 **`curl -v --resolve host:443:IP https://host/...`** 在保留 SNI、证书校验与 `Host` 头的前提下绕过 DNS 直连目标节点对照，再配合 **`curl -v --http3-only`** 与 **`openssl s_client -connect host:443 -tls1_3 -showcerts`** 覆盖从 L2 到 L7 的完整观测能力。
 
 ## 8.4 线上全链路丢包与连接故障排查闭环 {#ch8-4}
 
@@ -148,7 +148,7 @@ mtr -r -c 100 -n -T -P 443 <目标IP或域名>
 
 ## 练习 {#ch8-exercises}
 
-本节包含 4 道递进练习，依次覆盖实时通信协议选型、WebSocket 帧格式与安全校验、`tcpdump` 与防火墙抓包诊断及 `mtr` + `iproute2` 全链路丢包定位。请先独立推演，再展开参考答案核对。
+本节包含 5 道递进练习，依次覆盖实时通信协议选型、WebSocket 帧格式与安全校验、`tcpdump` 与防火墙抓包诊断、`mtr` + `iproute2` 全链路丢包定位及 DNS + `curl --resolve` 分级故障排查。请先独立推演，再展开参考答案核对。
 
 ### 练习 1：为四个真实业务场景选择最优通信协议并说明理由
 
@@ -219,6 +219,35 @@ mtr -r -c 100 -n -T -P 443 <目标IP或域名>
 1. **物理带宽未打满**：千兆全双工网卡的理论上限是 **RX 125 MB/s（125,000 kB/s）与 TX 125 MB/s 各自独立**。当前 RX 82 MB/s、TX 85 MB/s 均未达到 125 MB/s 上限（切勿把两者相加算成 167 MB/s > 125 MB/s 而误判！）。
 2. **真正丢包点在网卡 RX Ring Buffer（或收包软中断来不及处理）**：`RX overruns` 持续飙升表明网卡收包写入 Ring Buffer 时，内核软中断来不及取走导致旧槽位溢出丢包。应立即用 `ethtool -g eth0` 检查并调大 RX Ring Buffer，并检查 `/proc/interrupts` 与 `/proc/net/softnet_stat` 排查是否因未开多队列 RSS 导致单核 CPU 软中断打满。
 3. **`mtr` 第 3 跳不是元凶**：第 4 跳至终点丢包率均为 `0.0%`，说明业务流量完整穿过了第 3 跳，45% 只是第 3 跳路由器对自身生成 ICMP 超时响应做了限速（典型虚报）。
+
+</details>
+
+### 练习 5：用 `dig` 与 `curl --resolve` 对域名访问失败做分级排障
+
+线上反馈访问 `https://api.example.com/health` 失败。为避免一遇到访问异常就盲目抓全量包，请按“DNS 解析 → TCP 建连 → TLS 握手 → HTTP 响应”分级定界思路，分析以下三种现场：
+
+- **现场 A**：执行 `dig api.example.com` 返回状态为 **`NXDOMAIN`**；
+- **现场 B**：执行 `dig api.example.com` 返回状态为 **`SERVFAIL`**，而指定公共解析器执行 `dig @1.1.1.1 api.example.com` 正常返回 `203.0.113.50`；
+- **现场 C**：`dig api.example.com` 正常返回 `203.0.113.50`，但直接 `curl https://api.example.com/health` 超时或报错（已知另一台健康节点 IP 为 `203.0.113.51`）。
+
+请回答：
+1. 现场 A 的 `NXDOMAIN` 与现场 B 的 `SERVFAIL` 有何本质区别？分别应优先排查哪一侧？
+2. 在现场 B 或现场 C 中，为何应执行 `curl -v --resolve api.example.com:443:203.0.113.50 https://api.example.com/health` 做直连对照，而不是直接请求 `curl -v https://203.0.113.50/health`？
+3. 如何依据 `curl -v --resolve` 的分段输出，快速判断问题落在“地址可达但 TCP 失败”“TLS 握手/证书失败”还是“HTTP 应用层异常”？
+
+<details>
+<summary>查看参考答案</summary>
+
+1. **`NXDOMAIN` 与 `SERVFAIL` 的本质区别**：
+   - **`NXDOMAIN`（Non-Existent Domain）**：表示权威 DNS 明确答复“该域名不存在”（常见于域名拼写错误、记录被误删、内网 Split-Horizon 视图未配置该记录，且可能受 SOA 负缓存影响）。应优先核查域名拼写、权威 DNS 记录及当前解析器命中的内/外网视图；
+   - **`SERVFAIL`（Server Failure）**：表示递归解析器未能完成解析（**不代表域名不存在**），常见根因包括本地递归 DNS 故障、上游转发超时、权威服务器不可达或 **DNSSEC 验签失败**。现场 B 换 `@1.1.1.1` 可正常返回，进一步坐实问题出在默认本地递归解析器或其上游/DNSSEC 链路。
+2. **为何用 `curl --resolve` 保留主机名直连对照**：
+   - 直接访问 `https://203.0.113.50/health` 会丢失域名上下文：既不会在 TLS `ClientHello` 中发送正确的 **SNI**（多租户网关/CDN 会下发错误默认证书或直接断开），也会导致 **TLS 证书主机名（SAN）校验失败**，且 HTTP `Host` 头变为 IP 触发虚拟主机路由错配；
+   - **`curl --resolve api.example.com:443:203.0.113.50 https://api.example.com/health`** 仅在本地绕过 DNS 解析将域名映射到指定 IP，同时**完整保留 TLS SNI、证书域名校验与 HTTP `Host` 头**，还可将 IP 替换为备用节点 `203.0.113.51` 快速比对单点故障与全局故障。
+3. **借助 `curl -v --resolve` 分级定界**：
+   - **停在 `Trying 203.0.113.50:443...` 后超时或报 `Connection refused`**：故障在网络可达性或 **TCP 建连层**（路由、防火墙拦截、端口未监听或队列溢出），此时再针对该 IP/端口动用 `ss`、`mtr` 或 `tcpdump`；
+   - **已打印 `Connected to ...`，随后卡死或报 `SSL/TLS` 错误**：TCP 已通，故障在 **TLS 握手/证书层**（如中间证书缺失、SNI 错配、协议套件不兼容或 PMTUD 黑洞卡在证书大包），可进一步用 `openssl s_client -servername api.example.com -connect 203.0.113.50:443 -showcerts` 核验；
+   - **TLS 握手成功并发送 `> GET /health`，随后超时或返回 `502`/`504`/`500`**：DNS、TCP 与 TLS 均正常，故障已收窄至七层反向代理或后端应用服务本身。
 
 </details>
 

@@ -79,9 +79,11 @@ func or(channels ...<-chan struct{}) <-chan struct{} {
 
 | 对比维度 | `Result[T]` 绑定通道模式 | `errgroup.WithContext`（`x/sync/errgroup`） |
 | --- | --- | --- |
-| 容错与熔断策略 | 可定制：跳过瞬态错、记录部分结果，或满 `K` 次错误再关闭 `done` | **首错快速失败**：首个非 `nil` 错误立即取消派生 `ctx` 并返回该错误 |
+| 容错与熔断策略 | 可定制：跳过瞬态错、记录部分结果，或满 `K` 次错误再关闭 `done` | **首错取消派生 `ctx`**：首个非 `nil` 错误立即取消派生 `ctx`，待所有已启动函数返回后由 `Wait()` 返回首错 |
 | 数据交接形态 | 流式逐条经 `<-chan Result[T]` 传递，天然契合长流水线 | 适合扇出批任务按下标写入预分配结果切片槽位 |
 | 并发度控制 | 靠固定 worker 协程数或有界信号量通道控制 | 原生提供 `g.SetLimit(n)` 限制活跃子协程上限 |
+
+使用 `errgroup.WithContext` 时须特别留意其 `Wait()` 语义：当任一任务首次返回非 `nil` 错误时，派生 `ctx` 会被立即取消，但 **`g.Wait()` 必须等所有已启动的函数全部返回后才返回首错**，因此不监听 `ctx.Done()` 的慢调用仍会拖住整批请求。同样，`g.SetLimit(n)` 在活跃数达到 `n` 时会让后续 `g.Go` 阻塞等待空槽位且不会自动跳过已取消的 `ctx`，需要在提交前与任务入口配合检查 `ctx.Err()`。
 
 ## 3.3 泛型流式 Pipeline 与扇出扇入 {#ch3-3}
 
@@ -226,7 +228,7 @@ func bridge[T any](done <-chan struct{}, chanStream <-chan <-chan T) <-chan T {
 }
 ```
 
-`tee` 通过局部同名遮蔽与两轮 `nil` 屏蔽让两路消费者按任意先后顺序取走副本，但慢下游会形成背压连带阻塞快下游；`bridge` 则嵌套两层 `orDone` 依次排空每个子通道，将分段通道序列严格保序地展平为单一流。
+`tee` 通过局部同名遮蔽与两轮 `nil` 屏蔽让两路消费者按任意先后顺序取走副本，但慢下游会形成背压连带阻塞快下游；`bridge` 则嵌套两层 `orDone` 依次排空每个子通道，将分段通道序列严格保序地展平为单一流。生产高频场景下，若只是处理有限批任务的并发扇出、首错取消与并发度限流，应优先选用 [3.2.2 节](#ch3-2-2) 介绍的 `errgroup` 等结构化原语，不必为每个组合子手工拼接通道流。
 
 ## 3.5 排队理论、利特尔法则与调用树快速失败 {#ch3-5}
 
@@ -255,33 +257,60 @@ func CheckBudget(ctx context.Context, minCost time.Duration) error {
 
 ## 练习 {#ch3-exercises}
 
-以下 2 道练习分别检验 `orDone` 与 `bridge` 展平分段有序通道流并无泄漏提前退出，以及利用 `Result[T]` 实现容错阈值熔断消费器。代码默认位于同一包内，按需导入 `"context"`、`"errors"` 与 `"sync"`。建议先独立编写，再展开核对参考答案。
+以下 2 道练习分别检验使用 `errgroup.WithContext` 与 `SetLimit(3)` 实现有界并发及首错取消分析，以及利用 `Result[T]` 实现容错阈值熔断消费器。代码默认位于同一包内，按需导入 `"context"`、`"errors"`、`"sync"`、`"sync/atomic"` 与 `"golang.org/x/sync/errgroup"`。建议先独立编写并分析，再展开核对参考答案。
 
-### 练习 1：组合 orDone 与 bridge 展平分段通道流并中途安全取消
+### 练习 1：用 `errgroup.SetLimit(3)` 治理 10 任务有界并发与首错取消
 
-编写 `TakeFromSegments[T any](segments [][]T, limit int) []T`：按 `segments` 顺序用 `repeat` 与 `take` 为每段构造受 `done` 控制的有限流送入外层通道，再经 `bridge` 与 `orDone` 展平后仅读取前 `limit` 个元素便提前退出，要求未读完的分段协程零泄漏。
+现有 10 个任务（编号 `0..9`），要求使用 `errgroup.WithContext` 配合 `g.SetLimit(3)` 并发执行 `runTask(ctx, id)`，其中某个任务（例如 `id == 2`）会返回错误。请实现 `RunBoundedBatch(parent context.Context, runTask func(context.Context, int) error) (maxActive int32, err error)`，在限制最大活跃并发数为 `3` 的同时记录运行期观测到的峰值活跃协程数，并回答以下三个问题：
+
+1. 当某任务失败触发取消后，**哪些正在执行或尚未启动的任务会观察到取消**？提交循环已在 `g.Go` 前检查 `ctx.Err()`，为什么任务函数入口仍需再次检查？
+2. **如何验证同一时刻活跃的任务数不超过 `3`**？
+3. 若其中一个已启动的慢任务忽略了 `ctx.Done()`，**为什么 `g.Wait()` 仍会等它退出后才返回首错**？
 
 <details>
 <summary>查看参考答案</summary>
 
 ```go
-func TakeFromSegments[T any](segments [][]T, limit int) []T {
-	done := make(chan struct{})
-	defer close(done)
-	streams := make(chan (<-chan T), len(segments))
-	for _, seg := range segments {
-		streams <- take(done, repeat(done, seg...), len(seg))
+func RunBoundedBatch(
+	parent context.Context, runTask func(context.Context, int) error,
+) (int32, error) {
+	g, ctx := errgroup.WithContext(parent)
+	g.SetLimit(3)
+
+	var active, maxActive atomic.Int32
+	for id := range 10 {
+		if ctx.Err() != nil {
+			break // 已取消则停止继续提交剩余任务
+		}
+		g.Go(func() error {
+			cur := active.Add(1)
+			defer active.Add(-1)
+			for {
+				prev := maxActive.Load()
+				if cur <= prev || maxActive.CompareAndSwap(prev, cur) {
+					break
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return err // 兜底已在 g.Go 排队等槽位后才启动的任务
+			}
+			return runTask(ctx, id)
+		})
 	}
-	close(streams)
-	var res []T
-	for v := range take(done, bridge(done, streams), limit) {
-		res = append(res, v)
-	}
-	return res
+	err := g.Wait()
+	return maxActive.Load(), err
 }
 ```
 
-每段由 `take(done, repeat(done, seg...), len(seg))` 组合成受 `done` 抢占的无缓冲子通道；外层 `take` 读满 `limit` 个元素退出后，`defer close(done)` 立即级联唤醒 `bridge`、`orDone` 及剩余全部子阶段协程安全收尾。
+关键依据与问题分析：
+
+1. **哪些任务会观察到取消，以及为何需要双重检查 `ctx.Err()`**：
+   - **正在执行的其余活跃任务**（最多 2 个）：失败任务返回非 `nil` 错误瞬间，`errgroup` 立即取消派生 `ctx`，正在执行且监听 `<-ctx.Done()`（或透传 `ctx`）的任务会立即观察到取消并提前收尾。
+   - **尚未启动的剩余任务**：若提交循环在 `g.Go` 前检查 `ctx.Err() != nil` 并 `break`，后续尚未进入提交的任务根本不会被启动；若未做此检查，则所有剩余任务仍会随槽位释放依次由 `g.Go` 启动并在内部看到取消。更隐蔽的边界在于：**当 3 个槽位已满时，主循环此时正阻塞在 `g.Go`（等待内部信号量释放）里的那 1 个任务**，在失败任务退出空出槽位后依然会被启动——因此任务函数入口必须再检查一次 `ctx.Err()`，防止已取消后仍执行业务。
+2. **验证同时活跃数不超过 `3`**：
+   - 使用 `atomic.Int32` 维护当前活跃数 `active` 与历史峰值 `maxActive`。在获得槽位进入 `g.Go` 回调时执行 `cur := active.Add(1)` 并配 `defer active.Add(-1)`，用 CAS 循环更新 `maxActive`。在测试中配合 `go test -race` 运行不同耗时的 10 个任务，断言返回的 `maxActive <= 3`（且函数返回时 `active.Load() == 0`）。
+3. **为何 `g.Wait()` 会等已启动任务退出（发出取消 ≠ 协程已回收）**：
+   - `errgroup` 内部通过 `sync.WaitGroup` 追踪全部由 `g.Go` 启动的协程。首错发生时调用 `cancel()` 仅是发出协作式取消信号，绝不会强制终止其他正在运行的 goroutine；`g.Wait()` 底层会阻塞在 `wg.Wait()` 上，必须等到**每一个已启动函数全部返回**后，才返回记录的第一个非 `nil` 错误。因此，若某个已启动的慢任务忽略了 `ctx.Done()`，它会一直占住计数并拖住 `g.Wait()` 与整批请求。
 
 </details>
 
