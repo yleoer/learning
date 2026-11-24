@@ -76,18 +76,17 @@ description: 系统梳理 HTTP 与 RPC 的融合演进、服务端实时通信�
 
 ## 8.3 现代 Linux 网络抓包与诊断工具链 {#ch8-3}
 
-### 8.3.1 `iproute2` 全面取代废弃的 `net-tools` {#ch8-3-1}
+### 8.3.1 网络层与路由流控诊断命令（`iproute2`） {#ch8-3-1}
 
-原书仍大量使用早已停止维护、且多数现代 Linux 发行版默认不再安装的 `net-tools`（`ifconfig`/`netstat`/`route`/`arp`）。2026 生产排障应全面统一为基于内核 Netlink 接口的 **`iproute2`** 现代工具链：
+现代 Linux 生产环境已全面淘汰停维的 `net-tools`（`ifconfig`/`netstat`/`route`/`arp`；主机全栈观测工具对照详见[《图解系统》第 8 章现代观测工具图谱](../system/chapter-08#ch8-1-2)）。在网络协议栈与路由流控定界中，重点掌握以下专有诊断参数：
 
-| 排障目标 | 已废弃旧命令（`net-tools`） | 现代推荐命令（`iproute2` 等） | 常用排查参数示例 |
-| --- | --- | --- | --- |
-| 网卡地址与收发错包统计 | `ifconfig -a` | **`ip -s link`** / **`ip addr`** | `ip -s -s link show eth0`（显示详细丢包细分） |
-| 路由表与策略路由 | `route -n` | **`ip route`** | `ip route get 1.1.1.1`（精确模拟内核选路） |
-| ARP / IPv6 邻居缓存 | `arp -a` | **`ip neigh`** | `ip neigh show` |
-| Socket 连接与队列状态 | `netstat -napt` / `-lnt` | **`ss`** | `ss -lnt`（队列）、`ss -tin`（实时 `cwnd`/`rtt`）、`ss -K`（强断连接） |
-| 协议栈丢包与重传计数器 | `netstat -s` | **`nstat -az`** | `nstat -az 'TcpExt*'`（读取 `/proc/net/netstat` 完整指标） |
-| 流量控制队列（qdisc） | — | **`tc -s qdisc`** | `tc -s qdisc show dev eth0` |
+| 网络排障目标 | 推荐命令与高频参数示例 | 关键观测输出 |
+| --- | --- | --- |
+| **网卡详细丢包细分** | `ip -s -s link show eth0` / `ethtool -S eth0` | 区分物理 CRC 错包、Ring Buffer `overruns` 与驱动丢弃 |
+| **内核选路精确模拟** | `ip route get 203.0.113.10 from 10.0.1.5` | 直接让内核返回实际命中的路由出口网卡、源 IP 与下一跳网关（含策略路由） |
+| **ARP / IPv6 邻居状态** | `ip neigh show` | 检查下一跳 MAC 是否处于 `REACHABLE`、`STALE` 或解析失败 `FAILED` |
+| **TCP 内部窗口与强断连接** | `ss -tin` / `ss -K dst 10.0.0.8 dport = 8080` | 观测实时 `cwnd`/`rtt`/`notsent`，或经 Netlink 直接注入 `RST` 清理僵死连接 |
+| **协议栈异常计数与 qdisc** | `nstat -az 'TcpExt*'` / `tc -s qdisc show dev eth0` | 核查队列溢出、乱序丢包（`TCPOFODrop`）及出站流控队列 `dropped` |
 
 ### 8.3.2 `tcpdump` 实战与防火墙钩子先后顺序 {#ch8-3-2}
 

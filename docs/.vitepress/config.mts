@@ -184,16 +184,36 @@ const architectureSidebar = [
   },
 ]
 
-const systemChapters = [
-  { text: '前言与章节导航', link: '/books/system/' },
-  { text: '第 1 章 硬件基础、CPU 执行与缓存架构', link: '/books/system/chapter-01' },
-  { text: '第 2 章 操作系统内核、中断与系统调用', link: '/books/system/chapter-02' },
-  { text: '第 3 章 内存管理与页面回收', link: '/books/system/chapter-03' },
-  { text: '第 4 章 进程、线程与 CPU 调度', link: '/books/system/chapter-04' },
-  { text: '第 5 章 进程间通信与并发同步', link: '/books/system/chapter-05' },
-  { text: '第 6 章 文件系统与存储 I/O', link: '/books/system/chapter-06' },
-  { text: '第 7 章 网络协议栈、零拷贝与高性能网络模型', link: '/books/system/chapter-07' },
-  { text: '第 8 章 Linux 系统观测、性能排查与实战命令', link: '/books/system/chapter-08' },
+const systemSidebar = [
+  {
+    text: '图解系统',
+    items: [
+      { text: '导读与速查索引', link: '/books/system/' },
+    ],
+  },
+  {
+    text: '一、硬件微架构与内核基石',
+    items: [
+      { text: '第 1 章 硬件基础、CPU 执行与缓存架构', link: '/books/system/chapter-01' },
+      { text: '第 2 章 操作系统内核、中断与系统调用', link: '/books/system/chapter-02' },
+    ],
+  },
+  {
+    text: '二、内存、调度与并发同步',
+    items: [
+      { text: '第 3 章 内存管理与页面回收', link: '/books/system/chapter-03' },
+      { text: '第 4 章 进程、线程与 CPU 调度', link: '/books/system/chapter-04' },
+      { text: '第 5 章 进程间通信与并发同步', link: '/books/system/chapter-05' },
+    ],
+  },
+  {
+    text: '三、存储栈、网络 I/O 与生产排障',
+    items: [
+      { text: '第 6 章 文件系统与存储 I/O', link: '/books/system/chapter-06' },
+      { text: '第 7 章 网络协议栈、零拷贝与高性能网络模型', link: '/books/system/chapter-07' },
+      { text: '第 8 章 Linux 系统观测、性能排查与实战命令', link: '/books/system/chapter-08' },
+    ],
+  },
 ]
 
 const networkSidebar = [
@@ -313,12 +333,7 @@ export default defineConfig({
       '/books/mysql/': mysqlSidebar,
       '/books/redis/': redisSidebar,
       '/books/architecture/': architectureSidebar,
-      '/books/system/': [
-        {
-          text: '图解系统',
-          items: systemChapters,
-        },
-      ],
+      '/books/system/': systemSidebar,
       '/books/network/': networkSidebar,
       '/books/': [
         {
