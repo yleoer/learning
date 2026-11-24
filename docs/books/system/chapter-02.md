@@ -43,25 +43,25 @@ description: 梳理操作系统内核职责、用户态与内核态特权隔离�
 当应用程序调用标准库函数（如 C 的 `read()`、`open()` 或 Go 的网络读写）请求内核服务时，标准库会封装一次**系统调用**。原书 2.1 节曾描述“内核处理完后，主动触发中断把 CPU 执行权交回用户程序”，这一表述不够准确：
 
 - **历史方式（32 位 x86）**：早期通过软中断指令 `int 0x80` 陷入内核，返回时使用中断返回指令 `iret`，需查中断描述符表（IDT）并多次访存压栈，开销较高。
-- **现代方式（x86-64 / ARM64）**：x86-64 使用专用的快速系统调用指令 **`syscall`** 进入内核、**`sysret`** 返回用户态；ARM64 使用 **`svc`**（Supervisor Call）进入、**`eret`** 返回。**返回用户态是通过专用指令直接恢复特权级与保存的 `RIP`/`RSP`，并非再触发一次中断**。
+- **现代快速路径（x86-64 / ARM64）**：x86-64 使用专用指令 **`syscall`** 进入内核，常见快速路径使用 **`sysret`** 返回用户态（注：`syscall`/`sysret` 硬件指令本身不自动切换栈指针 `RSP`，由内核入口与出口显式保存并切换内核栈/恢复用户栈；当遇到 `ptrace` 调试、信号帧恢复或特殊寄存器状态不满足 `sysret` 约束时，内核会自动切走更完整的 `iret` 慢速返回路径）；ARM64 则使用 **`svc`** 进入、**`eret`** 返回。**常规返回用户态是直接恢复特权级与寄存器现场，并非再向硬件触发一次外部中断**。
 
 ```text
 用户态 (Ring 3 / EL0)                        内核态 (Ring 0 / EL1)
   |                                            |
   | 1. 将系统调用号放入 RAX，参数放入 RDI/RSI... |
-  | 2. 执行 syscall 指令 ---------------------->| 3. CPU 切换至 Ring 0，保存返回地址至 RCX
-  |                                            | 4. 切换至内核栈，查 sys_call_table 路由
-  |                                            | 5. 执行内核处理函数（如 sys_read）
-  | 7. 从 RAX 取返回值，继续执行 <---------------| 6. 执行 sysret 恢复用户栈与 Ring 3
+  | 2. 执行 syscall 指令 ---------------------->| 3. CPU 切至 Ring 0，保存 RIP 至 RCX、RFLAGS 至 R11
+  |                                            | 4. 内核显式保存用户 RSP 并切至内核栈，查表路由
+  |                                            | 5. 执行内核处理函数（如 ksys_read）
+  | 7. 从 RAX 取返回值，继续执行 <---------------| 6. 恢复用户 RSP，执行 sysret（或特殊慢路径 iret）回 Ring 3
 ```
 
 **系统调用与进程上下文切换的区别**：一次单纯的系统调用（在未发生阻塞调度的前提下）只需切换 CPU 特权级、栈指针与少量寄存器，**不更换进程，也不需要切换用户态页表**（注：在受 Meltdown 漏洞影响的旧款 Intel CPU 上，Linux 启用内核页表隔离 **KPTI** 后，进出内核会额外切换精简页表并刷新部分 TLB，增加一定开销；支持硬件缓解的新一代处理器可免除此开销）。
 
 ### 2.2.2 零陷入优化：vDSO 与批量提交 {#ch2-2-2}
 
-即便 `syscall` 已比传统 `int 0x80` 快得多，每秒数百万次调用高频只读接口（如获取系统时间 `clock_gettime()`、`gettimeofday()`、`getcpu()`）仍会累积可观的陷入开销。
+即便 `syscall` 已比传统 `int 0x80` 快得多，每秒数百万次调用高频只读接口（如查询墙上或单调时钟 `clock_gettime(CLOCK_REALTIME / CLOCK_MONOTONIC)`、`gettimeofday()`、`getcpu()`）仍会累积可观的陷入开销。
 
-Linux 为此引入了 **vDSO（Virtual Dynamic Shared Object）**：内核把一小段只读共享库代码和随时间更新的内核时钟数据页直接映射到每个进程的**用户地址空间**中。进程调用 `clock_gettime()` 时，直接在用户态读取该共享内存页即可返回精确时间，**完全不需要执行 `syscall` 陷入内核**。
+Linux 为此引入了 **vDSO（Virtual Dynamic Shared Object）**：内核把一小段只读共享库代码和随时间更新的内核时钟数据页（`vvar`）直接映射到每个进程的**用户地址空间**中。进程查询受支持的全局时钟时，直接在用户态结合硬件计时器（如 x86 TSC）读取该映射页即可算出精确时间，**无需执行 `syscall` 陷入内核**（注：并非所有时钟源都可走用户态快速路径——若请求查询依赖内核任务统计的 `CLOCK_PROCESS_CPUTIME_ID` / `CLOCK_THREAD_CPUTIME_ID` 或硬件时钟源不支持用户态直读，vDSO 函数会自动回退调用真实 `clock_gettime` 系统调用）。
 
 另一方面，针对大量磁盘或网络 I/O 系统调用的开销，现代 Linux（5.1+）通过 **`io_uring`** 在用户态与内核态之间建立共享环形队列，支持一次系统调用批量提交数十上百个请求，甚至在 `SQPOLL` 模式下实现无系统调用提交（详见[第 6 章 `io_uring`](./chapter-06#ch6-4-3)与[第 7 章现代 Proactor](./chapter-07#ch7-4-2)）。
 
@@ -92,15 +92,17 @@ Linux 为此引入了 **vDSO（Virtual Dynamic Shared Object）**：内核把一
 硬件触发 IRQ
   └──> 硬中断上半部（快速登记硬件状态，调用 raise_softirq() 置位）
          └──> 硬中断退出路径 irq_exit()
-                └──> 【优先路径】立即在当前核开中断执行 __do_softirq()
-                       ├── 处理完毕 → 恢复被中断的进程
-                       └── 单次超时(默认 2ms) 或 重启超限(默认 10 次)
-                             └──> 【兜底路径】唤醒 ksoftirqd/N 内核线程异步继续处理
+                └──> 【优先路径】立即在当前核开中断执行一轮 __do_softirq()
+                       ├── 无新挂起软中断 → 恢复被中断的进程
+                       └── 仍有新软中断挂起 → 在轮次末尾检查续跑条件：
+                             ├── 累计未达 2ms 且 重启未满 10 次 且 !need_resched() ──> 继续下一轮
+                             └── 任一条件不满足（耗时达 2ms / 满 10 轮 / 有高优抢占请求）
+                                   └──> 【兜底路径】唤醒 ksoftirqd/N 内核线程后续调度处理
 ```
 
-这一设计的精妙之处在于兼顾了**低延迟**与**防饿死**：
+这一设计的精妙之处在于兼顾了**低延迟**与**防饿死**（注意源码边界：`MAX_SOFTIRQ_TIME = 2ms` 是在**每轮软中断处理完后的循环判断条件**，并不能中途强行截停某个单次耗时超过 2 ms 的慢回调函数；反之即便未满 2 ms，只要 `need_resched()` 置位表明当前核有任务亟待抢占调度，也会提前退出循环转交 `ksoftirqd`）：
 - 正常负载下，软中断紧贴硬中断退出即刻执行，无需经历线程上下文切换，延迟极低；
-- 面对网络洪泛等极端流量时，一旦软中断持续占用 CPU 超过时间/次数预算，内核立刻停止在中断上下文中循环，转交普通调度优先级的 `ksoftirqd/N` 内核线程执行，避免用户态进程被彻底饿死。
+- 面对网络洪泛等持续高压流量时，一旦触发上述轮次退出条件，内核停止在中断返回路径中恋战，交由普通调度优先级的 `ksoftirqd/N` 内核线程参与公平调度，避免用户态进程被彻底饿死。
 
 此外，**软中断（Softirq）运行在原子上下文中，绝对不允许睡眠或调用可能阻塞的函数**；如果某设备的下半部工作需要睡眠等待锁或分配大块内存，驱动开发者应改用运行在普通内核线程中的**工作队列（Workqueue）**，或采用**线程化中断（Threaded IRQ）**。
 
@@ -151,7 +153,7 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 
 相比早期教科书对宏内核的静态描述，当今 Linux 6.x 在安全可编程与多租户隔离上形成了三项核心基础设施：
 
-1. **eBPF（Extended Berkeley Packet Filter）**：允许用户态程序将一段字节码注入内核，经过内核内置**校验器**（Verifier）静态验证（确保有向无环图有限终止、无越界访存、无未初始化寄存器读取）并 JIT 编译为原生机器码后，安全挂载到内核函数探针、系统调用、网络驱动（XDP）及调度器钩子上，兼具内核态极致性能与免崩溃安全性。
+1. **eBPF（Extended Berkeley Packet Filter）**：允许用户态程序将一段字节码注入内核，经过内核内置**校验器**（Verifier）按规则静态证明**有界终止**（现代内核支持可证明上限的有界循环、`bpf_loop` 与迭代器）、**指针与内存边界安全**及**辅助函数调用权限合规**，再经 JIT 编译为原生机器码安全挂载到内核探针、网络驱动（XDP）或调度器钩子上，在规避传统内核模块野指针崩溃风险的同时获得内核态执行效率（注：Verifier 保证内存与终止安全，但若在高频热路径挂载复杂循环或争抢全局 BPF Map 锁，仍可能带来显著的宿主机 CPU 开销）。
 2. **容器隔离基石（Namespace + cgroups v2）与 `/proc` 视图陷阱**：容器进程与宿主机共享同一个 Linux 内核，通过 **Namespace** 隔离资源视图（PID、网络栈、挂载点、UTS、IPC、User、Time），并通过 **cgroups v2** 在统一层级树下强制限制 CPU、内存与块 I/O 配额（云原生编排映射详见[《凤凰架构》第 8 章容器隔离原语](../architecture/chapter-08#ch8-1-1)）。
    - **高频生产陷阱**：Linux 默认**不会**按容器 cgroup 配额虚拟化 `/proc/cpuinfo` 与 `/proc/meminfo`！容器内未开启 cgroup 感知的旧版运行时或 C/C++ 代码若直接调 `sysconf(_SC_NPROCESSORS_ONLN)` 或读取 `/proc/meminfo`，拿到的是**宿主机整机 128 核 / 512 GB 物理规格**，从而盲目创建上百个工作线程或分配超大堆空间，瞬间引发剧烈上下文切换或触发容器 OOMKill（现代运行时如 Go 1.25+、JDK 17+ 已原生读取 cgroups v2 配额，详见[《Go 语言并发之道》第 5 章容器配额感知](../go-concurrency/chapter-05#ch5-3)）。
 3. **细粒度特权与系统调用过滤（Capabilities + `seccomp-bpf`）**：由于共享宏内核，一旦容器内进程以完整 `root` 身份调用高危系统调用，极易利用内核漏洞逃逸。现代容器与 AI Agent 代码执行沙箱普遍叠加两道内核防线：
@@ -173,11 +175,11 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 <details>
 <summary>查看参考答案</summary>
 
-1. **发生特权级切换**：x86-64 执行 `syscall` 从 Ring 3 切入 Ring 0，执行完通过 `sysret` 切回 Ring 3。
+1. **发生特权级切换**：x86-64 执行 `syscall` 从 Ring 3 切入 Ring 0，常规快速路径通过 `sysret`（特殊状态下走 `iret`）切回 Ring 3。
 2. **页表切换情况**：
    - **未启用 KPTI**（如具备硬件缓解的新款 CPU）：**不需要**切换用户态页表，始终在同一进程地址空间内执行，TLB 基本不受影响。
    - **启用 KPTI**（缓解 Meltdown 漏洞）：进入内核时需从“仅映射用户空间+极简内核跳板”的页表切换为完整内核页表，返回时切回，会产生额外的 `CR3` 切换与 TLB 开销（可借 PCID 缓解）。
-3. **开销来源**：每次 `syscall`/`sysret` 仍需保存和恢复寄存器上下文、切换用户栈与内核栈、执行 `seccomp` 过滤与内核安全检查及间接跳转（受 Spectre 等侧信道缓解影响成本更高），且反复打断用户态流水线与指令局部性。高频场景下应通过批量缓冲（如标准库缓冲、`io_uring` 批量提交）或 vDSO 减少陷入次数。
+3. **开销来源**：每次陷入与返回仍需保存和恢复寄存器上下文、显式切换用户栈与内核栈、执行 `seccomp` 过滤与内核安全检查及间接跳转（受 Spectre 等侧信道缓解影响成本更高），且反复打断用户态流水线与指令局部性。高频场景下应通过批量缓冲（如标准库缓冲、`io_uring` 批量提交）或 vDSO 减少陷入次数。
 
 </details>
 
@@ -193,7 +195,7 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 
 - **方案 A 的问题（全放硬中断）**：硬中断执行期间会屏蔽同源或本地中断。协议栈解析逻辑复杂且耗时，若全塞在硬中断里，高流量下 CPU 会长时间处于关中断状态，导致时钟中断漂移、其他外设（如磁盘、串口）中断严重延迟甚至丢失，同时抢占掉正常调度逻辑。
 - **方案 B 的问题（全放 `ksoftirqd`）**：每次少量数据包到达都要触发一次完整的内核线程唤醒与调度上下文切换，平白增加数微秒的网络尾延迟与调度开销。
-- **Linux 的折中**：优先在 `irq_exit()` 中开中断直接跑 `__do_softirq()`（零切换、低延迟），同时设时间（2 ms）与循环次数（10 次）硬预算，超限后立刻交由 `ksoftirqd/N` 参与正常调度，兼顾低延迟与系统活性。
+- **Linux 的折中**：优先在 `irq_exit()` 中开中断直接跑 `__do_softirq()`（零切换、低延迟），并在每轮处理完后检查续跑条件（累计耗时未达 `2 ms`、重启未满 `10 次` 且 `!need_resched()` 无抢占请求）；一旦任一条件触发便退出中断返回路径并唤醒 `ksoftirqd/N` 参与正常调度，兼顾低延迟与系统活性。
 
 </details>
 
@@ -228,16 +230,16 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 
 本节包含 4 道深度面试问答，结合连环追问考察系统调用优化、中断统计口径与现代内核安全扩展边界。
 
-### 面试题 1：Linux 中高频调用 `clock_gettime()` 为什么几乎没有内核态切换开销？追问：如果在容器测试中希望单独把某个容器的系统时间拨快 1 天而不影响宿主机，vDSO 会带来什么挑战？Linux 如何解决？
+### 面试题 1：Linux 中高频调用 `clock_gettime()` 为什么通常几乎没有内核态切换开销？追问：如果在容器测试中希望单独修改某个容器的“时间”（例如测试单调超时，或把日历时间拨快 1 天测试证书过期），vDSO 与 Linux Time Namespace 各自有哪些能力与硬边界？
 
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：`clock_gettime()` 通过 **vDSO** 直接在用户态读取内核映射的只读时间数据页，零 `syscall` 陷入；由于绕过了内核系统调用拦截层，传统拦截 `syscall` 改时间的方案对 vDSO 失效，Linux 5.6+ 通过 **Time Namespace（`CLONE_NEWTIME`）配合每命名空间专属的 vvar 时间偏移页**解决。
+**结论**：对于 `CLOCK_REALTIME`、`CLOCK_MONOTONIC` 等常用全局时钟，`clock_gettime()` 通过 **vDSO** 在用户态直读内核映射的 `vvar` 数据页，零 `syscall` 陷入（但 `CLOCK_PROCESS_CPUTIME_ID` 等仍回退 `syscall`）；由于不经过系统调用，靠 `seccomp`/`ptrace` 拦截改时失效。Linux 5.6+ 的 **Time Namespace（`CLONE_NEWTIME`）仅支持隔离偏移 `CLOCK_MONOTONIC` 与 `CLOCK_BOOTTIME`，不支持修改日历墙上时钟 `CLOCK_REALTIME`**！
 
 **关键依据**：
-- **vDSO 原理**：内核在进程启动时将 vDSO 代码段与包含时钟基准的数据页（`vvar`）映射进用户空间，glibc 直接结合硬件 TSC 寄存器在 Ring 3 算出纳秒级时间。
-- **容器改时挑战与解法**：早期工具若仅用 `seccomp`/`ptrace` 拦截系统调用修改返回值，`clock_gettime()` 因根本不走 `syscall` 会直接读到真实物理时间（唯有 `LD_PRELOAD` 劫持动态库函数对静态编译的 Go 二进制亦无效）。Linux 5.6 引入 **Time Namespace**，为进入独立时间命名空间的容器映射带有专属偏移量（Offset）的 `vvar` 页面，使 vDSO 在用户态计算单调时钟（`CLOCK_MONOTONIC` / `CLOCK_BOOTTIME`）时既保持零陷入高性能，又能看到隔离后的偏移时间。
+- **单调时钟偏移（Time Namespace 适用范围）**：Time Namespace 为容器映射专属的 `vvar` 时间偏移页，使容器内零陷入读取 `CLOCK_MONOTONIC` / `CLOCK_BOOTTIME`（主要服务于容器检查点热迁移 CRIU 恢复运行时长）时看到独立偏移值。
+- **日历时间测试边界（证书过期/跨天结算）**：内核出于时间一致性与文件时间戳复杂度考量，故意**未在 Time Namespace 中虚拟化 `CLOCK_REALTIME`**（见 `time_namespaces(7)`）。因此在容器内测试证书过期或跨自然日任务，**不能靠 Time Namespace**——工程标准做法是在业务代码中封装**可注入的抽象时钟接口（Clock Injection）**；对于无法改代码的动态链接 C/C++ 程序可借助 `LD_PRELOAD` 注入 `libfaketime` 劫持 libc 函数（注：对绕过 libc 直接调用 vDSO 的静态编译 Go 二进制不生效）。
 
 </details>
 
@@ -246,10 +248,10 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：三者在触发源（外设异步 / 指令同步 / 内核软件延迟）与上下文约束上完全不同；`si` 高而 `ksoftirqd` 为 0 是因为软中断在每次硬中断退出的 **`irq_exit()` 中未超单次预算就已全部消化**；当 `ksoftirqd` 跑满时**严禁盲目调为高实时优先级**，否则会直接饿死用户态业务进程。
+**结论**：三者在触发源（外设异步 / 指令同步 / 内核软件延迟）与上下文约束上完全不同；`si` 高而 `ksoftirqd` 为 0 是因为软中断在每次硬中断退出的 **`irq_exit()` 中未触发轮次退出条件就已全部消化**；当 `ksoftirqd` 跑满时**严禁盲目调为高实时优先级**，否则会直接饿死用户态业务进程。
 
 **关键依据**：
-- **统计口径差异**：`irq_exit()` 直接执行的软中断耗时计入 CPU 的 `si` 指标，但并不归属 `ksoftirqd` 线程；只有单轮超过 2 ms 或循环 10 次预算后剩余的工作才唤醒 `ksoftirqd/N`（此时其耗时同时体现在 `si` 与该线程 `%CPU` 上）。
+- **统计口径差异**：`irq_exit()` 直接执行的软中断耗时计入 CPU 的 `si` 指标，但并不归属 `ksoftirqd` 线程；只有一轮处理后仍有挂起软中断，且累计达 2 ms、重启满 10 轮或当前核 `need_resched()` 为真时，剩余工作才会唤醒 `ksoftirqd/N`。
 - **为何不能乱提实时优先级**：内核将超限软中断降级交给普通优先级的 `ksoftirqd`，初衷就是让它在极端流量下与应用程序公平竞争 CPU，给应用留出 `read()` 消费接收缓冲区或响应运维 SSH 的机会。若强行把 `ksoftirqd` 设为 `SCHED_FIFO` 实时进程，收包线程将占满 100% CPU 把业务线程彻底饿死——收进 Socket 缓冲区的包没人读，最终照样因缓冲区满而丢包！正确解法是开启网卡多队列 **RSS/RPS** 将中断分摊到多核，或在 XDP 层提前丢弃异常流量。
 
 </details>
@@ -267,26 +269,26 @@ Linux 与 Windows NT 均支持**多任务（MultiTask）**与**对称多处理�
 
 </details>
 
-### 面试题 4：eBPF 与传统的 Linux 可加载内核模块（LKM）相比有什么核心优势与边界？追问：内核中的 eBPF Verifier 具体如何确保一段外部注入的程序不会拖垮内核？
+### 面试题 4：eBPF 与传统的 Linux 可加载内核模块（LKM）相比有什么核心优势与边界？追问：内核中的 eBPF Verifier 具体如何防止外部注入字节码破坏内核内存安全？
 
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：eBPF 的优势是**内核态级性能 + 静态安全保证 + 跨内核版本免重编（CO-RE）**，边界在于只能挂载在受控钩子且受严格编程限制；**Verifier** 通过控制流图分析与抽象解释静态拒绝一切不安全字节码。
+**结论**：eBPF 的优势是**内核态高效率 + 加载期静态安全校验 + 跨内核版本免重编（CO-RE）**，边界在于只能挂载在内核显式开放的钩子且受严格编程规则限制；**Verifier** 通过控制流分析与寄存器状态抽象解释静态拦截越界或死循环字节码（但仍需开发者自行管控高频钩子上的性能开销）。
 
 **关键依据**：
-- **LKM 痛点 vs eBPF**：LKM 拥有无限制 Ring 0 权限，任意越界写或死锁都会直接引发 Kernel Panic，且升级内核常需重编 `.ko`；eBPF 则把“信任开发者”变成了“由内核数学证明安全”。
+- **LKM 痛点 vs eBPF**：LKM 拥有无限制 Ring 0 权限，任意越界写或死锁都会直接引发 Kernel Panic，且升级内核常需重编 `.ko`；eBPF 则在字节码进入内核执行前强制通过 Verifier 静态审查。
 - **Verifier 三大静态防线**：
-  1. **有界终止检查**：分析控制流图（CFG），禁止不受限的无界死循环（现代内核仅允许可证明迭代上限的有界循环或 `bpf_loop` 辅助函数），确保不会卡死内核路径；
-  2. **内存与指针类型追踪**：逐指令模拟寄存器状态，强制指针解引用前必须经过非空与边界检查，严禁任意物理/内核地址写操作；
-  3. **上下文权限约束**：按程序类型限制可调用的内核辅助函数（BPF Helpers / kfuncs）及指令总复杂度上限。
+  1. **有界终止证明**：检查控制流与循环上界，禁止不可证明终止的死循环（仅允许静态可证上限的有界循环、`bpf_loop` 或安全迭代器），并限制单次验证指令总步数；
+  2. **内存与指针类型追踪**：逐指令追踪寄存器类型与取值区间，强制指针解引用前必须完成非空判断与边界检查，严禁任意内核地址写操作；
+  3. **上下文与辅助函数白名单**：按程序挂载类型严格限制允许调用的 BPF Helpers / kfuncs，但需注意 Verifier 不保证零性能损耗——在高频系统调用或收包路径上滥用高复杂度循环与全局锁 Map 依然会显著拉高宿主机 CPU。
 
 </details>
 
 ## 参考资料
 
 - [Linux Kernel Documentation: Adding a New System Call & Syscall Internals](https://docs.kernel.org/process/adding-syscalls.html)
-- [Linux Programmer's Manual: `vdso(7)`](https://man7.org/linux/man-pages/man7/vdso.7.html)
+- [Linux Programmer's Manual: `vdso(7)` 与 `time_namespaces(7)`](https://man7.org/linux/man-pages/man7/time_namespaces.7.html)
 - [Linux Kernel Documentation: IRQ & Softirq Unreliable Guide to Hacking](https://docs.kernel.org/kernel-hacking/hacking.html)
 - [Linux Kernel Documentation: BPF Documentation](https://docs.kernel.org/bpf/index.html)
 - [Linux Kernel Documentation: Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)

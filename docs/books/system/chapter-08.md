@@ -9,7 +9,7 @@ description: 整合全书系统排障实战，建立基于 USE 方法的全栈�
 
 理解硬件缓存、内存页表、调度器、锁、块存储与网络协议栈的最终价值，在于面对线上延迟毛刺、吞吐骤降或进程假死时，能顺着内核指标迅速锁定根因，而不是盲目重启碰运气。本章整合原书《图解系统》第 9 章、1.6 节、4.4 节与第 10 章开头的实战案例，摒弃已停维的 `ifconfig`/`netstat` 等旧工具，建立以 `ip`、`ss`、`nstat`、`vmstat`、`iostat`、`perf`、**cgroups v2 PSI** 与 `bpftrace` 为核心的现代 Linux 系统级排障闭环。
 
-读完本章后，应能运用 USE 方法完成 60 秒全栈物理体检，独立走通软中断飙高、多线程死锁（严守非侵入观测与 STW 转储红线）、TCP 全连接队列溢出、容器局部内存抖动/OOM 四大实战链路，并写出不压垮线上机器的单趟大日志分析管道。
+读完本章后，应能运用 USE 方法完成 60 秒全栈物理体检，独立走通软中断飙高、多线程死锁（严守非侵入观测与 STW 转储红线）、TCP 全连接队列溢出、容器局部内存压力/OOM 四大实战链路，并在明确基数边界的前提下写出高效大日志分析管道。
 
 > 核对日期：2026 年 11 月 23 日；核对环境为 Linux 6.12 LTS（`iproute2`、`sysstat`、`procps-ng`、`perf` 与 `bpftrace` 工具链）。
 
@@ -20,7 +20,7 @@ description: 整合全书系统排障实战，建立基于 USE 方法的全栈�
 面对“接口变慢”的笼统告警，先按 Brendan Gregg 的 **USE 方法**对四大物理子系统（CPU、内存、存储 I/O、网络）逐一核查三项核心信号：
 
 - **Utilization（使用率）**：资源忙碌时间或容量占比（CPU `us`/`sy`/`si`、内存已用比、网卡带宽占比）；
-- **Saturation（饱和度）**：来不及即时处理而产生的**排队与节流**（CPU 运行队列长度与 cgroup `nr_throttled`、内存 Direct Reclaim/Swap/PSI、块设备队列深度 `aqu-sz`、TCP 全连接队列积压）；
+- **Saturation（饱和度）**：来不及即时处理而产生的**排队与节流**（CPU 运行队列长度与 cgroup `nr_throttled`、内存回收/Swap/PSI 停顿、块设备队列深度 `aqu-sz`、TCP 全连接队列积压）；
 - **Errors（错误数）**：硬件或内核拒绝计数（网卡 `overruns`/`dropped`、TCP `ListenOverflows`/重传、磁盘 I/O 错误、`dmesg` OOM 记录）。
 
 ### 8.1.2 全栈现代观测工具图谱 {#ch8-1-2}
@@ -30,9 +30,9 @@ description: 整合全书系统排障实战，建立基于 USE 方法的全栈�
 | 观测维度 | 淘汰旧工具 | 现代主力工具 | 核心排障用途 |
 | --- | :---: | --- | --- |
 | **CPU 与调度** | — | **`top` / `mpstat -P ALL` / `pidstat` / `vmstat`** | 查各核 `us`/`sy`/`si`/`wa` 倾斜、运行队列 `r`、不可中断阻塞 `b` 与上下文切换 `cs` |
-| **内存与容器压力** | — | **`free -h` / `sar -B` / cgroup `memory.pressure`** | 查 `available`、主次缺页速率（`majflt/s`）、后台/直接回收及容器 PSI 停顿占比 |
+| **内存与容器压力** | — | **`free -h` / `sar -B` / cgroup `memory.pressure`** | 查 `available`、主次缺页速率（`majflt/s`）、页面回收及容器 PSI 停顿时间占比 |
 | **存储与块设备** | — | **`iostat -xz` / `iotop` / `lsof +L1`** | 查读写毫秒延迟（`r_await`/`w_await`）、平均队列深度（`aqu-sz`）与未释放删除句柄 |
-| **网卡与套接字** | `ifconfig` / `netstat` | **`ip -s link` / `ss` / `nstat`** | 基于 Netlink `tcp_diag` 极速查全连接队列、TCP 内部窗口（`cwnd`/`notsent`）与协议栈丢包计数 |
+| **网卡与套接字** | `ifconfig` / `netstat` | **`ip -s link` / `ss` / `nstat`** | 基于 Netlink `tcp_diag` 极速查全连接队列、TCP 内部窗口（`cwnd`/`snd_wnd`/`notsent`）与协议栈异常计数 |
 | **内核与函数剖析** | — | **`perf` / `bpftrace`（eBPF）** | 低开销采集 On-CPU 火焰图、Off-CPU 阻塞栈、锁争用与内核 `kfree_skb` 丢包原因 |
 
 ## 8.2 CPU、软中断与多线程死锁排查实战 {#ch8-2}
@@ -59,18 +59,20 @@ tcpdump -i eth0 -nn -c 200
 - **正常业务流量但单核 `NET_RX` 100%**：开启多队列 **RSS / RPS** 打散中断绑核（见[第 7 章练习 3](./chapter-07#ch7-exercises)）；
 - **若高的是 `us`/`sy` 而非 `si`**：执行 `perf record -F 99 -p <pid> -g -- sleep 15` 生成火焰图直指热点函数。
 
-### 8.2.2 实战二：多线程死锁定位与线上非侵入红线 {#ch8-2-2}
+### 8.2.2 实战二：多线程死锁闭环取证与线上非侵入红线 {#ch8-2-2}
 
-面对僵死不响应且 CPU 跌至 0% 的多线程进程（Java 用 `jstack`，Go 用 `pprof` `goroutine`/`mutex`），C/C++ 原生服务在**已摘除流量**后可用 `pstack` 与 `gdb` 实锤锁环路：
+面对僵死不响应且 CPU 跌至 0% 的多线程进程（Java 用 `jstack`，Go 用 `pprof` `goroutine`/`mutex`），C/C++ 原生服务在**已摘除流量**后可用 `pstack` 与 `gdb` 验证**完整等待闭环**（注意：必须双向核实对方也在等己方持有的锁，否则可能只是单向锁阻塞慢操作而非死锁！）：
 
 ```text
 $ gdb -p <pid>
-(gdb) info threads        # 列出全部线程 LWP
-(gdb) thread 2            # 切至卡在 __lll_lock_wait 的线程 2 (LWP 87748)
-(gdb) bt                  # 定位调用 pthread_mutex_lock 的业务栈帧（如 frame 3）
+(gdb) info threads        # 列出全部线程 LWP（设线程 2 LWP=87748，线程 3 LWP=87747）
+(gdb) thread 2            # 1. 切至卡在 __lll_lock_wait 的线程 2 (LWP 87748)
+(gdb) bt                  #    定位调用 pthread_mutex_lock(&mutex_A) 的业务栈帧（如 frame 3）
 (gdb) frame 3
-(gdb) p mutex_A           # 查 __data.__owner = 87747（被线程 3 持有）
-(gdb) p mutex_B           # 查 __data.__owner = 87748（正由线程 2 自己持有，等待环路实锤！）
+(gdb) p mutex_A           #    查 __data.__owner = 87747 ──> 证明线程 2 正在等线程 3 持有的 mutex_A
+(gdb) p mutex_B           #    查 __data.__owner = 87748 ──> 证明线程 2 当前持有 mutex_B
+(gdb) thread 3            # 2. 【关键闭环步】切至线程 3 (LWP 87747) 查调用栈与等待目标
+(gdb) bt                  #    确认线程 3 同样卡在 pthread_mutex_lock(&mutex_B) ──> 双向环路实锤！
 ```
 
 > **生产高危红线（严禁在带流量的存活节点裸敲 `gdb` 或 `gcore`）**：
@@ -79,11 +81,11 @@ $ gdb -p <pid>
 
 ## 8.3 网络队列观测与 TCP 全连接队列溢出排障 {#ch8-3}
 
-### 8.3.1 `ss` 中 `Recv-Q` 与 `Send-Q` 的双重语义与排障口径 {#ch8-3-1}
+### 8.3.1 `ss` 中 `Recv-Q` 与 `Send-Q` 的双重语义与真实字段 {#ch8-3-1}
 
 ```bash
 ss -lnt                        # 仅查看 LISTEN 监听端口队列（注意 -l 看不到已建立连接）
-ss -tin state established      # 查看已建立连接及内部状态（rtt、cwnd、rwnd、notsent、retrans）
+ss -tin state established      # 查看已建立连接及内部状态（rtt、cwnd、snd_wnd、notsent、retrans、rwnd_limited 等；值为 0 的可选指标常被省略）
 nstat -az | grep -E "TcpExtListen|TcpRetransSegs"
 ```
 
@@ -107,25 +109,27 @@ nstat -az | grep -E "TcpExtListen|TcpRetransSegs"
 vmstat 1          # 看 r(就绪队列)、b(D态阻塞)、si/so(Swap换入换出颠簸)、cs(上下文切换)、wa(iowait)
 iostat -xz 1      # 看 r_await / w_await(读写毫秒延迟) 与 aqu-sz(平均请求队列深度)
 
-# 容器 cgroup v2 限额、OOM 事件与 PSI（Pressure Stall Information）停顿窗口观测
-cat /sys/fs/cgroup/<pod_path>/memory.{current,max,events,pressure}
+# 容器 cgroup v2 限额、回收细分、OOM 事件与 PSI（Pressure Stall Information）停顿观测
+cat /sys/fs/cgroup/<pod_path>/memory.{current,max,events,pressure,stat}
 ```
 
-### 8.4.2 实战四：Nginx 大日志安全分析与单趟 `awk` 聚合 {#ch8-4-2}
+### 8.4.2 实战四：Nginx 大日志安全分析与单趟 `awk` 边界 {#ch8-4-2}
 
-处理线上 GB 级日志严守两条铁律：**先 `ls -lh` 看大小（禁直接 `cat` 或全量外部 `sort` 打满磁盘），交互浏览用 `less` / `tail`**。利用 `awk` 哈希关联数组单趟 `O(N)` 扫描替代高开销的 `sort | uniq -c`（`O(N log N)` 临时文件写）：
+处理线上 GB 级日志严守两条铁律：**先 `ls -lh` 看大小（禁直接 `cat` 或全量外部 `sort` 打满临时磁盘），交互浏览用 `less` / `tail`**。在**默认 Combined 日志格式**（第 1 列为直连对端 IP，存在七层代理时须改取真实客户端列；第 4 列为 `[10/Nov/2026:...` 时间；第 7 列为请求 URI；第 9 列为状态码）且**去重后唯一键基数可控**（如几十万至百万级以内）的前提下，用 `awk` 关联数组单趟 `O(N)` 聚合可省去昂贵的 `sort | uniq -c` 外部排序：
 
 ```bash
-# 1. 按天统计独立访客 UV（组合键一次扫描去重，无需多次管道与全量排序）
-awk '{day = substr($4, 2, 11); if (!seen[day, $1]++) uv[day]++} END {for (d in uv) print d, uv[d]}' access.log | sort
+# 1. 按天统计独立客户端 IP 数（粗略近似 UV；受共享 NAT 与代理影响不等于真实自然人数）
+awk '{day = substr($4, 2, 11); if (!seen[day, $1]++) ips[day]++} END {for (d in ips) print d, ips[d]}' access.log | sort
 
-# 2. 精确统计 HTTP 500 状态码（第 9 列）下访问量 Top 5 的请求路径（第 7 列）
-awk '$9 == 500 {cnt[$7]++} END {for (u in cnt) print cnt[u], u}' access.log | sort -rn | head -n 5
+# 2. 精确统计 HTTP 500 状态码（$9 == 500）下出现次数 Top 5 的请求路径（先用 split 剥离 ? 后高基数动态查询参数防撑爆内存！）
+awk '$9 == 500 {split($7, u, "?"); cnt[u[1]]++} END {for (p in cnt) print cnt[p], p}' access.log | sort -rn | head -n 5
 ```
+
+> **高基数内存边界提示**：`awk` 关联数组常驻内存，若不对包含随机 Token/时间戳的 `$7` 做路径归一化，或遭遇数千万随机伪造源 IP 攻击，哈希表本身仍可能耗尽数 GB 内存；超大规模/超高基数场景应离线导入列式分析库（ClickHouse）或采用流式 HyperLogLog / 分桶统计。
 
 ## 练习 {#ch8-exercises}
 
-本节包含 5 道实战排障推演题，覆盖全连接队列溢出、收包分层积压定界、主机 Swap 颠簸、容器 cgroup v2/PSI OOM 诊断及大日志命令重构。请先独立推演，再展开答案核对。
+本节包含 5 道实战排障推演题，覆盖全连接队列溢出、收包分层积压定界、主机 Swap 颠簸、容器 cgroup v2/PSI OOM 证据闭环及大日志命令重构。请先独立推演，再展开答案核对。
 
 ### 练习 1：根据 `ss` 与 `nstat` 输出诊断建连故障
 
@@ -164,13 +168,13 @@ TcpExtListenDrops               48210
 <summary>查看参考答案</summary>
 
 - **主机 A（驱动层 RX Ring Buffer 溢出）**：网卡 DMA 收包速率快于内核 `NET_RX` 软中断摘包速率。应通过 `ethtool -G eth0 rx 4096` 扩容环形缓冲，并开启多队列 RSS 将中断分流至多核。
-- **主机 B（用户态应用消费阻塞）**：报文已顺利穿过网卡与 TCP 协议栈进入 Socket 接收缓冲区，是**业务进程调用 `read()` 太慢**导致积压（继而引发 TCP 零窗口反压对端）。应直接剖析应用进程阻塞栈、慢 SQL 或锁争用。
+- **主机 B（用户态应用消费慢于接收速率）**：报文已顺利穿过网卡与 TCP 协议栈进入 Socket 接收缓冲区，是**业务进程调用 `read()` 速度跟不上**导致积压（继而引发 TCP 接收窗口收缩反压对端）。应直接剖析应用进程阻塞栈、慢 SQL 或锁争用。
 
 </details>
 
 ### 练习 3：从 `vmstat` 与 `iostat` 联合输出还原系统雪崩现场
 
-某数据库主机夜间响应骤降：`vmstat 1` 显示 `si`/`so` 持续数万、`wa` 达 45%、`us` 仅 10%；`iostat -xz 1` 显示磁盘 `r_await`/`w_await` 飙至 80 ms。请还原内核故障链并给出治理方案。
+某数据库主机夜间响应骤降：`vmstat 1` 看到 `si`/`so` 持续数万、`wa` 达 45%、`us` 仅 10%；`iostat -xz 1` 显示磁盘 `r_await`/`w_await` 飙至 80 ms。请还原内核故障链并给出治理方案。
 
 <details>
 <summary>查看参考答案</summary>
@@ -180,44 +184,44 @@ TcpExtListenDrops               48210
 
 </details>
 
-### 练习 4：宿主机 `available` 充裕但容器反复退出（Exit 137）的联合诊断
+### 练习 4：宿主机 `available` 充裕但容器反复退出（Exit 137）的证据闭环诊断
 
 一台 64 GiB 物理内存的宿主机上 `free -h` 显示 `available` 仍有 **20 GiB**，但某核心业务容器每隔十几分钟便以退出码 **`137`** 重启，且重启前数分钟接口 P99 延迟剧烈抖动。
 
-1. 解释为何宿主机仍有 20 GiB 可用内存，该容器依然会被杀；
-2. 写出宿主机核查该容器 **cgroup v2** 的四项核心文件及其各自证实的现象；
-3. 能否仅凭退出码 `137` 断定发生 OOM？如何闭环实锤？
+1. 解释为何宿主机仍有 20 GiB 可用内存，该容器依然可能因内存触顶被杀；
+2. 写出宿主机核查该容器 **cgroup v2** 的核心文件（`memory.current`/`max`、`memory.events`、`memory.pressure` 及 `memory.stat`），并准确说明它们各自能证明到哪一步（注意区分内存压力来源与全局/局部 OOM 计数边界）；
+3. 为什么不能单凭退出码 `137` 定性为容器 OOM？如何按时间窗口完成严谨闭环？
 
 <details>
 <summary>查看参考答案</summary>
 
-1. **隔离边界**：`free -h` 只反映宿主机全局剩余内存；容器受自身 cgroup v2 `memory.max` 硬限约束，一旦容器内匿名页 + PageCache + Slab 顶满 `memory.max` 且回收无果，即触发局部 cgroup OOM Killer。
-2. **四项核查清单**：
-   - `memory.current` 与 `memory.max`（及 `memory.high`）：确认用量紧贴硬限；
-   - `memory.events`：核实 `oom` 与 `oom_kill` 计数在重启时刻递增；
-   - `memory.pressure`（PSI）：若重启前几分钟 `some`/`full` 百分比持续飙高，直接证实容器在被杀前已深陷同步 **Direct Reclaim 内存回收停顿**，完美解释重启前的 P99 延迟毛刺！
-3. **退出码 `137` 辨析**：**不能单凭 `137` 定性 OOM**——`137 = 128 + 9` 仅代表死于 `SIGKILL`（优雅停机超时被 kubelet 强杀或人工 `kill -9` 也是 137）。须结合 `memory.events` 的 `oom_kill`、`dmesg -T` 的 `Memory cgroup out of memory` 或 K8s `Reason: OOMKilled` 实锤（容器 QoS 驱逐策略详见[《凤凰架构》第 8 章练习 1](../architecture/chapter-08#ch8-exercises)）。
+1. **隔离边界**：`free -h` 只反映宿主机全局剩余可回收内存；容器受自身 cgroup v2 `memory.max` 硬限约束，只要计入该 cgroup 的匿名页、PageCache 与内核 Slab 总和顶满 `memory.max` 且组内回收无果，即在该 cgroup 作用域内触发 OOM Killer。
+2. **cgroup v2 指标的精确证据强度**：
+   - `memory.current` vs `memory.max`（及软限 `memory.high`）：确认容器内存是否紧贴限额运行；
+   - `memory.pressure`（PSI）：若重启前 `some`/`full` 百分比持续飙升，证明任务因**内存压力**发生了实质性停顿（解释了重启前 P99 延迟毛刺；注：PSI 涵盖直接内存回收 Direct Reclaim、`memory.high` 节流、内存紧缩 Compaction 与 Swap 回读等所有内存停顿，若要进一步实锤是 Direct Reclaim，可对照同目录 `memory.stat` 中 `pgsteal_direct` / `pgscan_direct` 的增量）；
+   - `memory.events`：核查故障时间窗口内 `max`、`oom` 与 `oom_kill` 增量（注：内核中整机全局 OOM 若恰好选中杀掉该 cgroup 内的进程，`oom_kill` 同样会加 1；但结合本例宿主机仍有 20 GiB `available` 且 `max`/`oom` 同步增长，指向局部 memcg 触限）。
+3. **退出码 `137` 严谨闭环**：**单凭 `137` 绝不足以定性 OOM**——在 Unix/容器约定中 `137` 通常对应 `128 + SIGKILL(9)`（可能源于 OOM Killer、探针失败/优雅停机超时后被 kubelet 发 `SIGKILL` 强杀或外部人工 `kill -9`），甚至程序自身调用 `exit(137)` 也会返回该值。必须按**同一故障时间戳**交叉对齐三项证据：`memory.events` 中 `oom` + `oom_kill` 递增、宿主机 `dmesg -T` 出现指向该 cgroup 的 `Memory cgroup out of memory: Killed process ...` 记录，以及容器运行时记录的 `Reason: OOMKilled`（容器侧 QoS 详见[《凤凰架构》第 8 章练习 1](../architecture/chapter-08#ch8-exercises)）。
 
 </details>
 
 ### 练习 5：重构高开销且易误判的大日志统计管道
 
-某同学从 10 GB Nginx 日志中统计 **500 状态码下访问最多的前 5 个 URL（第 7 列为 URL，第 9 列为状态码）**，写下：
+某同学从 10 GB 标准 Nginx 访问日志中统计 **HTTP 状态码为 `500` 的请求里，访问次数最多的前 5 个接口路径（第 7 列为可能带 `?token=...` 参数的 URI，第 9 列为状态码）**，写下：
 
 ```bash
 cat access.log | grep " 500 " | awk '{print $7}' | sort | uniq -c | sort -rn | head -n 5
 ```
 
-指出三处缺陷并给出最优改写。
+指出该写法在**准确性、I/O 开销与高基数参数**上的问题，并给出更安全高效的改写方案。
 
 <details>
 <summary>查看参考答案</summary>
 
-- **三处缺陷**：① `grep " 500 "` 全行模糊匹配，若响应大小（第 10 列）恰好为 `500` 字节会误统计；② `cat | grep | awk` 多进程管道冗余搬运 10 GB 文本；③ `sort | uniq -c` 对数百万条匹配记录做全量外部排序，内存与临时磁盘 I/O 开销巨大。
-- **单趟精确改写**：
+- **主要问题**：① `grep " 500 "` 全行文本模糊匹配，响应字节数（第 10 列）恰好为 `500` 时会被误计入；② `cat | grep | awk` 多进程管道冗余拷贝 10 GB 文本，且 `sort | uniq -c` 需对全部命中行做 `O(N log N)` 外部临时文件排序；③ 若 `$7` 带有高基数动态 Query 参数（如 `?req_id=xxx`），既会导致同一接口无法合并计数，改用哈希表时还会撑大内存。
+- **高效准确改写（单进程精确匹配第 9 列，剥离动态参数降低基数后单趟聚合）**：
 
 ```bash
-awk '$9 == 500 {cnt[$7]++} END {for (url in cnt) print cnt[url], url}' access.log | sort -rn | head -n 5
+awk '$9 == 500 {split($7, u, "?"); cnt[u[1]]++} END {for (p in cnt) print cnt[p], p}' access.log | sort -rn | head -n 5
 ```
 
 </details>
@@ -226,18 +230,18 @@ awk '$9 == 500 {cnt[$7]++} END {for (url in cnt) print cnt[url], url}' access.lo
 
 本节精选 4 道线上排障深水区面试题，采用“工具机制 + 多分支故障推演”考察真实生产诊断能力。
 
-### 面试题 1：高并发服务器上为什么必须用 `ss` 替代 `netstat`？追问：用 `ss -nt` 发现某条 `ESTAB` 连接的 `Send-Q` 长期积压 2 MB，能直接断定是中间网络丢包吗？如何一步区分真正根因？
+### 面试题 1：高并发服务器上为什么必须用 `ss` 替代 `netstat`？追问：用 `ss -nt` 发现某条 `ESTAB` 连接的 `Send-Q` 长期积压 2 MB，能直接断定是中间网络丢包吗？如何利用 `ss -tin` 的真实指标缩小排查范围？
 
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：`netstat` 逐行读取解析 `/proc/net/tcp` 伪文件，数十万连接下持锁耗时长达数秒；`ss` 经内核 **Netlink `tcp_diag`** 二进制接口直接过滤返回，快一个数量级。**`Send-Q` 积压绝不能直接等同于网络丢包**，必须用 **`ss -tin`** 拆分观察内部指标定界。
+**结论**：`netstat` 逐行解析 `/proc/net/tcp` 伪文件，数十万连接下持锁耗时长达数秒；`ss` 经内核 **Netlink `tcp_diag`** 二进制接口直接过滤返回，快一个数量级。**`Send-Q` 积压绝不能直接断定是中间网络丢包**，应执行 **`ss -tin`** 结合内核真实输出字段分流定界。
 
 **关键依据**：
-- Linux 内核中 `ESTAB` 的 `Send-Q = write_seq - snd_una`，混装了“已发未确认（in-flight）”和“尚未发出（`notsent`）”两部分字节。执行 `ss -tin dst <对端IP>` 即可一锤定音区分三种截然不同的根因：
-  1. **中间链路丢包**：`retrans`（在途/累计重传）持续增加、`cwnd`（拥塞窗口）被打得很小，且大量字节处于已发出待确认态；
-  2. **对端应用消费卡死（零窗口反压）**：`retrans` 为 0，但看到对端通告接收窗口 `rwnd` 极小或归零（辅以定时器 `timer:(persist,...)` 零窗口探测），大量数据卡在本地 `notsent` 发不出去；
-  3. **本地突发写入超大块数据**：本地应用瞬间 `write` 数 MB 而链路带宽有限，短暂积压在 `notsent`，吞吐跑满但无重传。
+- `ESTAB` 态下 `Send-Q = write_seq - snd_una`，同时包含了“已发出待确认（in-flight）”与“尚积压在本地未发出（`notsent`）”两部分字节。观察 `ss -tin`（注意：`iproute2` 中对端通告的发送窗口字段名为 **`snd_wnd`**，且值为 `0` 的可选字段在输出中会被省略）：
+  1. **观测到重传退避**：若 `retrans`（在途/累计重传）持续攀升、`cwnd` 明显受压，说明发送端检测到了报文未获确认并触发重传（至于丢包发生在中间链路、对端网卡 Ring Buffer 还是防火墙，还需结合两端 `ip -s link`/`nstat`/`mtr` 进一步定界）；
+  2. **对端接收窗口反压（流量控制受限）**：若无明显重传，但出现 `timer:(persist,...)` 零窗口探测定时器、`rwnd_limited`（受对端接收窗口限制的累计时长）持续增长，或 `snd_wnd` 极小乃至因归零被省略，同时本地 `notsent` 积压巨大——说明**对端内核 Socket 接收缓冲区已满**（对端应用读取慢于发送速率，需去对端查 `Recv-Q` 与进程状态）；
+  3. **本地突发写入受限于带宽/Pacing**：窗口与重传均正常，仅 `notsent` 随业务突发大包写入短暂冲高。
 
 </details>
 
@@ -246,11 +250,11 @@ awk '$9 == 500 {cnt[$7]++} END {for (url in cnt) print cnt[url], url}' access.lo
 <details>
 <summary>查看参考答案</summary>
 
-**结论**：NVMe 上 `%util = 100%` **不代表饱和**（它只统计“至少有 1 个在途请求的时间占比”，多队列 NVMe 可并行处理上百个请求，应看 `r_await`/`w_await` 是否陡增及 `aqu-sz`/IOPS 是否触顶）；若底层硬件 `await` 极低但 `write()` 偶发百毫秒毛刺，瓶颈通常在**内核 PageCache 脏页同步限流或文件系统日志锁**。
+**结论**：NVMe 上 `%util = 100%` **不代表饱和**（它只统计“至少有 1 个在途请求的时间占比”，多队列 NVMe 可并行处理上百个请求，应看 `r_await`/`w_await` 是否陡增及 `aqu-sz`/IOPS 是否触顶）；若底层硬件 `await` 极低但缓冲 `write()` 偶发百毫秒毛刺，瓶颈通常在**通用块层之上的 PageCache 脏页同步限流或文件系统锁**。
 
 **关键依据**：
-- **脏页触顶前台阻塞**：当突发写入使内存脏页越过 `vm.dirty_ratio`（或 cgroup 脏页硬限）时，内核不再允许 `write()` 写完内存立刻返回，而是强行把业务线程拉去同步刷脏页节流（Dirty Throttling）！
-- **文件系统层串行锁**：Ext4 JBD2 日志提交事务切换或同一文件 `inode_lock` 互斥写锁争用，同样发生在通用块层之上（因此块层的 `iostat await` 看起来完全正常）。可用 eBPF 工具 `ext4slower` / `xfsdist` 对比 VFS 层延迟与块设备层延迟快速实锤。
+- **脏页触顶前台阻塞（Dirty Throttling）**：当突发写入使内存脏页越过 `vm.dirty_ratio`（或容器 cgroup 脏页阈值）时，内核不再允许 `write()` 写完内存立刻返回，而是强行把当前业务线程拉去同步等待脏页回写节流！
+- **文件系统层串行锁**：Ext4 JBD2 日志事务切换等待或同一文件 `inode` 互斥写锁争用，同样发生在块设备层之上（因此块层的 `iostat await` 看起来依然很低）。可用 eBPF 工具 `ext4slower` / `xfsdist` 直接对比 VFS 层耗时与块层耗时实锤。
 
 </details>
 
