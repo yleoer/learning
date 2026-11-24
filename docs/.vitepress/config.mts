@@ -263,8 +263,8 @@ function pageCategory(page: string): 'article' | 'website' {
 
 export default defineConfig({
   lang: 'zh-CN',
-  title: '技术学习笔记',
-  description: '记录原文、思考、实践与问答，让知识变成可以复习的系统。',
+  title: '技术学习手册',
+  description: '精选经典著作去重精编，对齐最新技术基线，兼顾系统精通、面试通关与工程实战。',
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
     [
@@ -287,7 +287,7 @@ export default defineConfig({
       ['meta', { property: 'og:title', content: title }],
       ['meta', { property: 'og:description', content: description }],
       ['meta', { property: 'og:image', content: `${siteUrl}/logo.svg` }],
-      ['meta', { property: 'og:image:alt', content: '技术学习笔记' }],
+      ['meta', { property: 'og:image:alt', content: '技术学习手册' }],
       ['meta', { name: 'twitter:card', content: 'summary' }],
       ['meta', { name: 'twitter:title', content: title }],
       ['meta', { name: 'twitter:description', content: description }],
@@ -302,7 +302,7 @@ export default defineConfig({
   },
   themeConfig: {
     logo: '/logo.svg',
-    siteTitle: '技术学习笔记',
+    siteTitle: '技术学习手册',
     nav: [
       { text: '首页', link: '/' },
       ...books,
@@ -383,7 +383,7 @@ export default defineConfig({
     outline: { level: 2, label: '目录' },
     footer: {
       message: '持续学习，持续输出。',
-      copyright: 'Copyright © 2026 技术学习笔记',
+      copyright: 'Copyright © 2026 技术学习手册',
     },
   },
 })

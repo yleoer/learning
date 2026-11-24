@@ -1,5 +1,5 @@
 ---
-name: 技术学习笔记
+name: 技术学习手册
 description: 个人技术书架：安静、温暖、清晰，组件轻巧而明确，优先易用。
 colors:
   primary: "#b45335"
@@ -82,7 +82,7 @@ components:
   chapter-outline: { textColor: "{colors.text-secondary}", fontSize: "13px", lineHeight: "1.5" }
 ---
 
-# Design System: 技术学习笔记
+# Design System: 技术学习手册
 
 ## Overview
 

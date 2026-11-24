@@ -1,28 +1,28 @@
 ---
 layout: home
 title: 首页
-description: 涵盖 Go 语言、Go 并发、MySQL、Redis、操作系统、计算机网络与分布式云原生架构的 7 大专题、67 章中文技术学习与复习指南。
+description: 精选经典技术著作“一书一专题”去重精编，涵盖 Go 语言、Go 并发、MySQL、Redis、操作系统、计算机网络与分布式云原生架构的现代技术学习与实战手册。
 
 hero:
-  name: 技术学习笔记
-  text: 后端与系统工程的个人技术书架
-  tagline: 7 大核心专题、67 章结构化指南——沿问题主线重组经典知识，对照一手规范与源码核验，用折叠自测把零散笔记连成可反复回看的体系。
+  name: 技术学习手册
+  text: 经典重编与现代实战的技术书架
+  tagline: 精选经典著作“一书一专题”去重精炼——剔除过时旧知、对齐最新 LTS 与规范基线，打通底层原理、工程排障与高频面试追问，助你系统重学至精通。
   actions:
     - theme: brand
       text: 浏览专题书架
       link: '#topics'
     - theme: alt
-      text: 从 Go 语言开始
-      link: /books/go-guide/
+      text: 从系统底座开始
+      link: /books/system/
 
 features:
   - icon: 🧭
-    title: 按知识域重组
-    details: 打破零散章节与跨篇重复，每个核心机制集中在唯一主场讲透，并以稳定锚点串联语言、存储、系统、网络与架构。
+    title: 一书一专题精简重编
+    details: 单书内打破冗长铺垫按因果脉络重组模块，跨书重叠机制严守唯一主场与稳定锚点互引，拒绝水词与重复建设。
   - icon: 🧪
-    title: 依规范与源码核验
-    details: 全面校准原书过时细节，对齐 Go 1.27、MySQL 8.4 LTS、Redis 8、Linux 6.12 LTS 与最新 IETF RFC，标明核对边界。
-  - icon: 🔖
-    title: 面向复习与排障
-    details: 每章配套导读索引、递进实战练习与高频面试题，参考答案默认折叠保留思考空间，延伸资料直指一手官方文档。
+    title: 汰旧纳新对齐基线
+    details: 删去已淘汰机制的过时细节，全面对齐 Go 1.27、MySQL 8.4 LTS、Redis 8、Linux 6.12 LTS 与最新 IETF RFC 规范。
+  - icon: 🎯
+    title: 贯通精通、面试与实战
+    details: 每章串联底层不变量、生产权衡取舍与排障诊断，配套默认折叠的场景化实战练习与连环追问式高频面试题。
 ---
